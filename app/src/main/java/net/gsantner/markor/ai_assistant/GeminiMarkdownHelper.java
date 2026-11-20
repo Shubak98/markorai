@@ -483,8 +483,8 @@ public final class GeminiMarkdownHelper {
             throw new IOException("Gemini edits could not be applied because the original Markdown is missing.");
         }
 
-        final Map<?, ?> patch = asObject(parseJson(editsJson), "edit patch");
-        final Object editsValue = patch.get("edits");
+        final Map<?, ?> patchObject = asObject(parseJson(editsJson), "edit patch");
+        final Object editsValue = patchObject.get("edits");
         if (!(editsValue instanceof List<?>)) {
             throw new IOException("Gemini returned an invalid edit patch: the \"edits\" array is missing.");
         }
