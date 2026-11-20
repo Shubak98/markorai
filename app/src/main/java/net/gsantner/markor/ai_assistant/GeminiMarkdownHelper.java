@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 public final class GeminiMarkdownHelper {
     private static final String SYSTEM_INSTRUCTION = "You are a helpful Markdown AI assistant. Understand instructions in Hindi, Hinglish, and English. Return exactly one compact JSON object without Markdown fences or commentary, with mode set to edit, answer, navigate, or create_note. Respect the selected mode in the request; when it is auto, choose the best mode. For edit, return edits: an array of objects with action (insert_after, replace, or append_end), target, and content. For insert_after and replace, target must be an exact snippet from the original Markdown occurring exactly once; append_end requires an empty target. All targets refer to the unchanged original. For answer, handle Q&A, summaries, explanations, MCQs, flashcards, Anki-style Q&A, and tables without editing; return answer and optionally matched_file. If folder context is supplied, answer from that context, cite exact filenames and headings, and set matched_file to the best source filename. For navigate, return target_text (an exact heading or unique line from the document) and reason (a short one-line summary). For create_note, return a safe .md filename and full Markdown content. Preserve unrelated document content when editing.";
@@ -88,34 +89,28 @@ public final class GeminiMarkdownHelper {
     }
 
     public static IntentResult parseIntentResponse(final String response) throws IOException {
-        try {
-            final JSONObject json = new JSONObject(response);
-            final Object modeValue = json.opt("mode");
-            if (!(modeValue instanceof String)) {
-                throw new IOException("Gemini returned an intent without a valid \"mode\" string.");
-            }
-            final String mode = (String) modeValue;
-            if ("edit".equals(mode)) {
-                final JSONArray edits = json.optJSONArray("edits");
-                if (edits == null) {
-                    throw new IOException("Gemini returned an edit intent without an \"edits\" array.");
-                }
-                return new IntentResult(mode, json.toString(), null, null, null, null, null, null);
-            } else if ("answer".equals(mode)) {
-                return new IntentResult(mode, null, requiredString(json, "answer"),
-                        optionalString(json, "matched_file"), null, null, null, null);
-            } else if ("navigate".equals(mode)) {
-                return new IntentResult(mode, null, null, null, requiredString(json, "target_text"),
-                        requiredString(json, "reason"), null, null);
-            } else if ("create_note".equals(mode)) {
-                return new IntentResult(mode, null, null, null, null, null,
-                        requiredString(json, "filename"), requiredString(json, "content"));
-            }
-            throw new IOException("Gemini returned an unsupported intent mode.");
-        } catch (JSONException exception) {
-            throw new IOException("Gemini returned invalid intent JSON (" + exception.getClass().getName()
-                    + "): " + exception.getMessage(), exception);
+        final Map<?, ?> json = asObject(parseJson(response), "intent");
+        final Object modeValue = json.get("mode");
+        if (!(modeValue instanceof String)) {
+            throw new IOException("Gemini returned an intent without a valid \"mode\" string.");
         }
+        final String mode = (String) modeValue;
+        if ("edit".equals(mode)) {
+            if (!(json.get("edits") instanceof List<?>)) {
+                throw new IOException("Gemini returned an edit intent without an \"edits\" array.");
+            }
+            return new IntentResult(mode, response, null, null, null, null, null, null);
+        } else if ("answer".equals(mode)) {
+            return new IntentResult(mode, null, requiredString(json, "answer"),
+                    optionalString(json, "matched_file"), null, null, null, null);
+        } else if ("navigate".equals(mode)) {
+            return new IntentResult(mode, null, null, null, requiredString(json, "target_text"),
+                    requiredString(json, "reason"), null, null);
+        } else if ("create_note".equals(mode)) {
+            return new IntentResult(mode, null, null, null, null, null,
+                    requiredString(json, "filename"), requiredString(json, "content"));
+        }
+        throw new IOException("Gemini returned an unsupported intent mode.");
     }
 
     public static String sanitizeNoteFilename(final String requestedName) {
@@ -133,23 +128,275 @@ public final class GeminiMarkdownHelper {
         return name;
     }
 
-    private static String requiredString(final JSONObject json, final String key) throws IOException {
-        final Object value = json.opt(key);
+    private static String requiredString(final Map<?, ?> json, final String key) throws IOException {
+        final Object value = json.get(key);
         if (!(value instanceof String) || ((String) value).trim().isEmpty()) {
             throw new IOException("Gemini returned an intent without a valid \"" + key + "\" string.");
         }
         return (String) value;
     }
 
-    private static String optionalString(final JSONObject json, final String key) throws IOException {
-        final Object value = json.opt(key);
-        if (value == null || value == JSONObject.NULL) {
+    private static String optionalString(final Map<?, ?> json, final String key) throws IOException {
+        final Object value = json.get(key);
+        if (value == null) {
             return null;
         }
         if (!(value instanceof String)) {
             throw new IOException("Gemini returned an invalid \"" + key + "\" value.");
         }
         return (String) value;
+    }
+
+    private static Object parseJson(final String json) throws IOException {
+        if (json == null) {
+            throw new IOException("Gemini returned invalid JSON: response is missing.");
+        }
+        return new JsonParser(json).parse();
+    }
+
+    private static Map<?, ?> asObject(final Object value, final String description) throws IOException {
+        final Map<?, ?> object = asObjectOrNull(value);
+        if (object == null) {
+            throw new IOException("Gemini returned an invalid " + description + ": a JSON object is required.");
+        }
+        return object;
+    }
+
+    private static Map<?, ?> asObjectOrNull(final Object value) {
+        return value instanceof Map<?, ?> ? (Map<?, ?>) value : null;
+    }
+
+    private static final class JsonParser {
+        private final String input;
+        private int position;
+
+        private JsonParser(final String input) {
+            this.input = input;
+        }
+
+        private Object parse() throws IOException {
+            skipWhitespace();
+            final Object value = parseValue(0);
+            skipWhitespace();
+            if (position != input.length()) {
+                throw invalidJson("unexpected data after the JSON value");
+            }
+            return value;
+        }
+
+        private Object parseValue(final int depth) throws IOException {
+            if (depth > 64) {
+                throw invalidJson("JSON nesting is too deep");
+            }
+            skipWhitespace();
+            if (position >= input.length()) {
+                throw invalidJson("unexpected end of input");
+            }
+            switch (input.charAt(position)) {
+                case '{':
+                    return parseObject(depth + 1);
+                case '[':
+                    return parseArray(depth + 1);
+                case '"':
+                    return parseString();
+                case 't':
+                    return parseLiteral("true", Boolean.TRUE);
+                case 'f':
+                    return parseLiteral("false", Boolean.FALSE);
+                case 'n':
+                    return parseLiteral("null", null);
+                default:
+                    return parseNumber();
+            }
+        }
+
+        private Map<String, Object> parseObject(final int depth) throws IOException {
+            expect('{');
+            final Map<String, Object> object = new java.util.LinkedHashMap<>();
+            skipWhitespace();
+            if (consume('}')) {
+                return object;
+            }
+            while (true) {
+                skipWhitespace();
+                if (position >= input.length() || input.charAt(position) != '"') {
+                    throw invalidJson("object keys must be strings");
+                }
+                final String key = parseString();
+                skipWhitespace();
+                expect(':');
+                object.put(key, parseValue(depth));
+                skipWhitespace();
+                if (consume('}')) {
+                    return object;
+                }
+                expect(',');
+            }
+        }
+
+        private List<Object> parseArray(final int depth) throws IOException {
+            expect('[');
+            final List<Object> array = new ArrayList<>();
+            skipWhitespace();
+            if (consume(']')) {
+                return array;
+            }
+            while (true) {
+                array.add(parseValue(depth));
+                skipWhitespace();
+                if (consume(']')) {
+                    return array;
+                }
+                expect(',');
+            }
+        }
+
+        private String parseString() throws IOException {
+            expect('"');
+            final StringBuilder value = new StringBuilder();
+            while (position < input.length()) {
+                final char character = input.charAt(position++);
+                if (character == '"') {
+                    return value.toString();
+                }
+                if (character < 0x20) {
+                    throw invalidJson("unescaped control character in string");
+                }
+                if (character != '\\') {
+                    value.append(character);
+                    continue;
+                }
+                if (position >= input.length()) {
+                    throw invalidJson("incomplete string escape");
+                }
+                final char escaped = input.charAt(position++);
+                switch (escaped) {
+                    case '"':
+                    case '\\':
+                    case '/':
+                        value.append(escaped);
+                        break;
+                    case 'b':
+                        value.append('\b');
+                        break;
+                    case 'f':
+                        value.append('\f');
+                        break;
+                    case 'n':
+                        value.append('\n');
+                        break;
+                    case 'r':
+                        value.append('\r');
+                        break;
+                    case 't':
+                        value.append('\t');
+                        break;
+                    case 'u':
+                        value.append(parseUnicodeEscape());
+                        break;
+                    default:
+                        throw invalidJson("invalid string escape");
+                }
+            }
+            throw invalidJson("unterminated string");
+        }
+
+        private char parseUnicodeEscape() throws IOException {
+            if (position + 4 > input.length()) {
+                throw invalidJson("incomplete Unicode escape");
+            }
+            int value = 0;
+            for (int index = 0; index < 4; index++) {
+                final char hex = input.charAt(position++);
+                final int digit = hex >= '0' && hex <= '9' ? hex - '0'
+                        : hex >= 'a' && hex <= 'f' ? hex - 'a' + 10
+                        : hex >= 'A' && hex <= 'F' ? hex - 'A' + 10 : -1;
+                if (digit < 0) {
+                    throw invalidJson("invalid Unicode escape");
+                }
+                value = (value << 4) | digit;
+            }
+            return (char) value;
+        }
+
+        private Object parseNumber() throws IOException {
+            final int start = position;
+            consume('-');
+            if (consume('0')) {
+                if (position < input.length() && input.charAt(position) >= '0'
+                        && input.charAt(position) <= '9') {
+                    throw invalidJson("invalid leading zero");
+                }
+            } else {
+                if (position >= input.length() || input.charAt(position) < '1' || input.charAt(position) > '9') {
+                    throw invalidJson("invalid number");
+                }
+                consumeDigits();
+            }
+            if (consume('.')) {
+                if (!consumeDigits()) {
+                    throw invalidJson("invalid number fraction");
+                }
+            }
+            if (consume('e') || consume('E')) {
+                if (!consume('+')) {
+                    consume('-');
+                }
+                if (!consumeDigits()) {
+                    throw invalidJson("invalid number exponent");
+                }
+            }
+            try {
+                return new java.math.BigDecimal(input.substring(start, position));
+            } catch (NumberFormatException exception) {
+                throw invalidJson("invalid number");
+            }
+        }
+
+        private boolean consumeDigits() {
+            final int start = position;
+            while (position < input.length() && input.charAt(position) >= '0'
+                    && input.charAt(position) <= '9') {
+                position++;
+            }
+            return position > start;
+        }
+
+        private Object parseLiteral(final String literal, final Object value) throws IOException {
+            if (!input.startsWith(literal, position)) {
+                throw invalidJson("invalid JSON value");
+            }
+            position += literal.length();
+            return value;
+        }
+
+        private void expect(final char expected) throws IOException {
+            if (!consume(expected)) {
+                throw invalidJson("expected '" + expected + "'");
+            }
+        }
+
+        private boolean consume(final char expected) {
+            if (position < input.length() && input.charAt(position) == expected) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        private void skipWhitespace() {
+            while (position < input.length()) {
+                final char character = input.charAt(position);
+                if (character != ' ' && character != '\t' && character != '\r' && character != '\n') {
+                    return;
+                }
+                position++;
+            }
+        }
+
+        private IOException invalidJson(final String detail) {
+            return new IOException("Gemini returned invalid JSON at character " + position + ": " + detail + ".");
+        }
     }
 
     public static List<String> fetchAvailableModels(final String apiKey) throws IOException {
@@ -201,36 +448,34 @@ public final class GeminiMarkdownHelper {
     }
 
     static String appendAvailableModels(final String response, final List<String> models) throws IOException {
-        try {
-            final JSONObject json = new JSONObject(response);
-            final JSONArray availableModels = json.optJSONArray("models");
-            if (availableModels != null) {
-                for (int index = 0; index < availableModels.length(); index++) {
-                    final JSONObject model = availableModels.optJSONObject(index);
-                    final JSONArray methods = model == null ? null : model.optJSONArray("supportedGenerationMethods");
-                    boolean supportsGeneration = false;
-                    if (methods != null) {
-                        for (int methodIndex = 0; methodIndex < methods.length(); methodIndex++) {
-                            if ("generateContent".equals(methods.optString(methodIndex))) {
-                                supportsGeneration = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (supportsGeneration) {
-                        final String name = model.optString("name", "");
-                        final String modelId = name.startsWith("models/") ? name.substring("models/".length()) : name;
-                        if (!modelId.isEmpty() && !models.contains(modelId)) {
-                            models.add(modelId);
+        final Map<?, ?> json = asObject(parseJson(response), "model list");
+        final Object modelsValue = json.get("models");
+        if (modelsValue instanceof List<?>) {
+            for (Object modelValue : (List<?>) modelsValue) {
+                final Map<?, ?> model = asObjectOrNull(modelValue);
+                final Object methodsValue = model == null ? null : model.get("supportedGenerationMethods");
+                boolean supportsGeneration = false;
+                if (methodsValue instanceof List<?>) {
+                    for (Object method : (List<?>) methodsValue) {
+                        if ("generateContent".equals(method)) {
+                            supportsGeneration = true;
+                            break;
                         }
                     }
                 }
+                if (supportsGeneration) {
+                    final Object nameValue = model.get("name");
+                    final String name = nameValue instanceof String ? (String) nameValue : "";
+                    final String modelId = name.startsWith("models/")
+                            ? name.substring("models/".length()) : name;
+                    if (!modelId.isEmpty() && !models.contains(modelId)) {
+                        models.add(modelId);
+                    }
+                }
             }
-            return json.optString("nextPageToken", "");
-        } catch (JSONException exception) {
-            throw new IOException("Gemini returned an invalid model list (" + exception.getClass().getName()
-                    + "): " + exception.getMessage(), exception);
         }
+        final Object nextPageToken = json.get("nextPageToken");
+        return nextPageToken instanceof String ? (String) nextPageToken : "";
     }
 
     public static String applyEdits(final String originalMarkdown, final String editsJson) throws IOException {
@@ -238,81 +483,78 @@ public final class GeminiMarkdownHelper {
             throw new IOException("Gemini edits could not be applied because the original Markdown is missing.");
         }
 
-        try {
-            final JSONArray edits = new JSONObject(editsJson).optJSONArray("edits");
-            if (edits == null) {
-                throw new IOException("Gemini returned an invalid edit patch: the \"edits\" array is missing.");
-            }
-            final List<Patch> patches = new ArrayList<>();
-            for (int index = 0; index < edits.length(); index++) {
-                final int editNumber = index + 1;
-                final JSONObject edit = edits.optJSONObject(index);
-                if (edit == null) {
-                    throw invalidEdit(editNumber, "the edit must be a JSON object.");
-                }
-                final Object actionValue = edit.opt("action");
-                final Object targetValue = edit.opt("target");
-                final Object contentValue = edit.opt("content");
-                if (!(actionValue instanceof String) || !(targetValue instanceof String)
-                        || !(contentValue instanceof String)) {
-                    throw invalidEdit(editNumber, "action, target, and content must be strings.");
-                }
-                final String action = (String) actionValue;
-                final String target = (String) targetValue;
-                final String content = (String) contentValue;
-                if ("append_end".equals(action)) {
-                    if (!target.isEmpty()) {
-                        throw invalidEdit(editNumber, "append_end requires an empty target.");
-                    }
-                    patches.add(new Patch(originalMarkdown.length(), originalMarkdown.length(), content));
-                } else if ("insert_after".equals(action) || "replace".equals(action)) {
-                    if (target.isEmpty()) {
-                        throw invalidEdit(editNumber, action + " requires a non-empty target.");
-                    }
-                    final int targetIndex = findUniqueTarget(originalMarkdown, target, editNumber);
-                    final int targetEnd = targetIndex + target.length();
-                    if ("insert_after".equals(action)) {
-                        patches.add(new Patch(targetEnd, targetEnd, content));
-                    } else {
-                        patches.add(new Patch(targetIndex, targetEnd, content));
-                    }
-                } else {
-                    throw invalidEdit(editNumber, "unsupported action \"" + action + "\".");
-                }
-            }
-
-            validatePatchPositions(patches);
-            Collections.sort(patches, new Comparator<Patch>() {
-                @Override
-                public int compare(final Patch first, final Patch second) {
-                    final int byStart = Integer.compare(first.start, second.start);
-                    if (byStart != 0) {
-                        return byStart;
-                    }
-                    if (first.isInsertion() == second.isInsertion()) {
-                        return 0;
-                    }
-                    return first.isInsertion() ? -1 : 1;
-                }
-            });
-
-            final StringBuilder updated = new StringBuilder(originalMarkdown.length());
-            int position = 0;
-            for (Patch patch : patches) {
-                updated.append(originalMarkdown, position, patch.start);
-                updated.append(patch.content);
-                position = patch.end;
-            }
-            updated.append(originalMarkdown, position, originalMarkdown.length());
-            final String result = updated.toString();
-            if (!originalMarkdown.trim().isEmpty() && result.trim().isEmpty()) {
-                throw new IOException("Gemini edits would remove all Markdown content. No changes were applied.");
-            }
-            return result;
-        } catch (JSONException exception) {
-            throw new IOException("Gemini returned an invalid edit patch (" + exception.getClass().getName()
-                    + "): " + exception.getMessage(), exception);
+        final Map<?, ?> patch = asObject(parseJson(editsJson), "edit patch");
+        final Object editsValue = patch.get("edits");
+        if (!(editsValue instanceof List<?>)) {
+            throw new IOException("Gemini returned an invalid edit patch: the \"edits\" array is missing.");
         }
+        final List<?> edits = (List<?>) editsValue;
+        final List<Patch> patches = new ArrayList<>();
+        for (int index = 0; index < edits.size(); index++) {
+            final int editNumber = index + 1;
+            final Map<?, ?> edit = asObjectOrNull(edits.get(index));
+            if (edit == null) {
+                throw invalidEdit(editNumber, "the edit must be a JSON object.");
+            }
+            final Object actionValue = edit.get("action");
+            final Object targetValue = edit.get("target");
+            final Object contentValue = edit.get("content");
+            if (!(actionValue instanceof String) || !(targetValue instanceof String)
+                    || !(contentValue instanceof String)) {
+                throw invalidEdit(editNumber, "action, target, and content must be strings.");
+            }
+            final String action = (String) actionValue;
+            final String target = (String) targetValue;
+            final String content = (String) contentValue;
+            if ("append_end".equals(action)) {
+                if (!target.isEmpty()) {
+                    throw invalidEdit(editNumber, "append_end requires an empty target.");
+                }
+                patches.add(new Patch(originalMarkdown.length(), originalMarkdown.length(), content));
+            } else if ("insert_after".equals(action) || "replace".equals(action)) {
+                if (target.isEmpty()) {
+                    throw invalidEdit(editNumber, action + " requires a non-empty target.");
+                }
+                final int targetIndex = findUniqueTarget(originalMarkdown, target, editNumber);
+                final int targetEnd = targetIndex + target.length();
+                if ("insert_after".equals(action)) {
+                    patches.add(new Patch(targetEnd, targetEnd, content));
+                } else {
+                    patches.add(new Patch(targetIndex, targetEnd, content));
+                }
+            } else {
+                throw invalidEdit(editNumber, "unsupported action \"" + action + "\".");
+            }
+        }
+
+        validatePatchPositions(patches);
+        Collections.sort(patches, new Comparator<Patch>() {
+            @Override
+            public int compare(final Patch first, final Patch second) {
+                final int byStart = Integer.compare(first.start, second.start);
+                if (byStart != 0) {
+                    return byStart;
+                }
+                if (first.isInsertion() == second.isInsertion()) {
+                    return 0;
+                }
+                return first.isInsertion() ? -1 : 1;
+            }
+        });
+
+        final StringBuilder updated = new StringBuilder(originalMarkdown.length());
+        int position = 0;
+        for (Patch patch : patches) {
+            updated.append(originalMarkdown, position, patch.start);
+            updated.append(patch.content);
+            position = patch.end;
+        }
+        updated.append(originalMarkdown, position, originalMarkdown.length());
+        final String result = updated.toString();
+        if (!originalMarkdown.trim().isEmpty() && result.trim().isEmpty()) {
+            throw new IOException("Gemini edits would remove all Markdown content. No changes were applied.");
+        }
+        return result;
     }
 
     private static IOException invalidEdit(final int editNumber, final String detail) {
