@@ -1,0 +1,32 @@
+name: Build debug APK
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleFlavorDefaultDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: markor-ai-debug-apk
+          path: app/build/outputs/apk/**/*.apk
