@@ -196,11 +196,35 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         // >>> AI_ASSISTANT_HOOK_START
         if (!_document.isBinaryFileNoTextLoading()) {
-            aiAssistantModule.attachFloatingButton(view, _hlEditor, () -> {
-                if (saveDocument(false) && _isPreviewVisible) {
-                    updateViewModeText();
-                }
-            });
+            aiAssistantModule.attachFloatingButton(view, _hlEditor, _document.file,
+                    (target, result) -> {
+                        if (_isPreviewVisible && _webView != null) {
+                            final String javascript = "(function(){var t="
+                                    + org.json.JSONObject.quote(target)
+                                    + ";var n=t.replace(/^#{1,6}\\s+/, '').trim();"
+                                    + "var e=document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th');"
+                                    + "for(var i=0;i<e.length;i++){var x=(e[i].innerText||e[i].textContent||'').trim();"
+                                    + "if(x===t||x===n){e[i].scrollIntoView({behavior:'smooth',block:'center'});return true;}}"
+                                    + "return false;})()";
+                            _webView.evaluateJavascript(javascript,
+                                    value -> result.onResult("true".equals(value)));
+                        } else {
+                            final int index = _hlEditor.getText().toString().indexOf(target);
+                            if (index >= 0) {
+                                _hlEditor.requestFocus();
+                                _hlEditor.setSelection(index);
+                                _hlEditor.bringPointIntoView(index);
+                            }
+                            result.onResult(index >= 0);
+                        }
+                    },
+                    file -> net.gsantner.markor.activity.DocumentActivity.launch(
+                            getActivity(), file, null, null),
+                    () -> {
+                        if (saveDocument(false) && _isPreviewVisible) {
+                            updateViewModeText();
+                        }
+                    });
         }
         aiAssistantModule.setViewModeVisible(_isPreviewVisible);
         // <<< AI_ASSISTANT_HOOK_END

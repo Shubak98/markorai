@@ -86,4 +86,39 @@ public class GeminiMarkdownHelperTest {
         }
         assertEquals("# Topic\nExisting text\n", original);
     }
+
+    @Test
+    public void parsesAllSupportedIntentModes() throws IOException {
+        final GeminiMarkdownHelper.IntentResult edit = GeminiMarkdownHelper.parseIntentResponse(
+                "{\"mode\":\"edit\",\"edits\":[{\"action\":\"append_end\",\"target\":\"\","
+                        + "\"content\":\"Added\"}]}");
+        assertEquals("edit", edit.getMode());
+        assertTrue(edit.getEditsJson().contains("\"edits\""));
+
+        final GeminiMarkdownHelper.IntentResult answer = GeminiMarkdownHelper.parseIntentResponse(
+                "{\"mode\":\"answer\",\"answer\":\"Study notes\",\"matched_file\":\"lesson.md\"}");
+        assertEquals("answer", answer.getMode());
+        assertEquals("Study notes", answer.getAnswer());
+        assertEquals("lesson.md", answer.getMatchedFile());
+
+        final GeminiMarkdownHelper.IntentResult navigate = GeminiMarkdownHelper.parseIntentResponse(
+                "{\"mode\":\"navigate\",\"target_text\":\"## Results\",\"reason\":\"Results section\"}");
+        assertEquals("navigate", navigate.getMode());
+        assertEquals("## Results", navigate.getTargetText());
+        assertEquals("Results section", navigate.getReason());
+
+        final GeminiMarkdownHelper.IntentResult createNote = GeminiMarkdownHelper.parseIntentResponse(
+                "{\"mode\":\"create_note\",\"filename\":\"study.md\",\"content\":\"# Study\"}");
+        assertEquals("create_note", createNote.getMode());
+        assertEquals("study.md", createNote.getFilename());
+        assertEquals("# Study", createNote.getNoteContent());
+    }
+
+    @Test
+    public void sanitizesNoteFilenameToSingleMarkdownFilename() {
+        final String sanitized = GeminiMarkdownHelper.sanitizeNoteFilename("../../folder\\note:bad");
+        assertTrue(sanitized.endsWith(".md"));
+        assertTrue(!sanitized.contains("/") && !sanitized.contains("\\"));
+        assertEquals("New Note.md", GeminiMarkdownHelper.sanitizeNoteFilename("..."));
+    }
 }
