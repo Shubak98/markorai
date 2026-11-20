@@ -202,10 +202,25 @@ public final class AiAssistantModule {
         modelInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         modelInput.setHint(AiSettingsStore.DEFAULT_MODEL);
         modelInput.setText(settingsStore.getModel());
+        final LinearLayout modelRow = new LinearLayout(context);
+        modelRow.setOrientation(LinearLayout.HORIZONTAL);
+        modelRow.addView(modelInput, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final Button fetchModelsButton = new Button(context);
+        fetchModelsButton.setText("Fetch Models");
+        modelRow.addView(fetchModelsButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final ProgressBar modelProgress = new ProgressBar(context);
+        modelProgress.setVisibility(View.GONE);
+        final LinearLayout.LayoutParams modelProgressParams = new LinearLayout.LayoutParams(
+                dp(context, 24), dp(context, 24));
+        modelProgressParams.gravity = Gravity.CENTER_VERTICAL;
+        modelProgressParams.setMargins(dp(context, 8), 0, 0, 0);
+        modelRow.addView(modelProgress, modelProgressParams);
         content.addView(keyLabel);
         content.addView(apiKeyInput);
         content.addView(modelLabel);
-        content.addView(modelInput);
+        content.addView(modelRow);
 
         final AlertDialog dialog = new AlertDialog.Builder(context)
                 .setTitle("AI Edit Settings")
@@ -213,6 +228,51 @@ public final class AiAssistantModule {
                 .setPositiveButton("Save", null)
                 .setNegativeButton("Cancel", null)
                 .create();
+        fetchModelsButton.setOnClickListener(view -> {
+            final String typedApiKey = apiKeyInput.getText().toString().trim();
+            final String apiKey = typedApiKey.isEmpty() ? settingsStore.getApiKey() : typedApiKey;
+            if (apiKey.isEmpty()) {
+                showModelFetchError(context, "Enter your Gemini API key before fetching models.");
+                return;
+            }
+            fetchModelsButton.setEnabled(false);
+            modelProgress.setVisibility(View.VISIBLE);
+            EXECUTOR.execute(() -> {
+                try {
+                    final List<String> models = GeminiMarkdownHelper.fetchAvailableModels(apiKey);
+                    MAIN_HANDLER.post(() -> {
+                        if (!dialog.isShowing() || fragment.getContext() == null) {
+                            return;
+                        }
+                        modelProgress.setVisibility(View.GONE);
+                        fetchModelsButton.setEnabled(true);
+                        if (models.isEmpty()) {
+                            showModelFetchError(context,
+                                    "No models supporting generateContent are available for this API key.");
+                            return;
+                        }
+                        final String[] modelIds = models.toArray(new String[0]);
+                        new AlertDialog.Builder(context)
+                                .setTitle("Select a Gemini model")
+                                .setSingleChoiceItems(modelIds, -1, (picker, which) -> {
+                                    modelInput.setText(modelIds[which]);
+                                    picker.dismiss();
+                                })
+                                .setNegativeButton("Cancel", null)
+                                .show();
+                    });
+                } catch (IOException exception) {
+                    MAIN_HANDLER.post(() -> {
+                        if (!dialog.isShowing() || fragment.getContext() == null) {
+                            return;
+                        }
+                        modelProgress.setVisibility(View.GONE);
+                        fetchModelsButton.setEnabled(true);
+                        showModelFetchError(context, exception.getMessage());
+                    });
+                }
+            });
+        });
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(view -> {
                     final String apiKey = apiKeyInput.getText().toString().trim();
@@ -227,6 +287,15 @@ public final class AiAssistantModule {
                     }
                 }));
         dialog.show();
+    }
+
+    private static void showModelFetchError(final android.content.Context context, final String message) {
+        new AlertDialog.Builder(context)
+                .setTitle("Could not fetch Gemini models")
+                .setMessage(message == null || message.isEmpty()
+                        ? "The Gemini model listing failed. Please try again." : message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void showDiffPreview(final EditText editText, final String original, final String updated) {

@@ -12,6 +12,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public final class GeminiMarkdownHelper {
     private static final String SYSTEM_INSTRUCTION = "You are a precise Markdown document editor. Read the full Markdown document and the user's instruction (which may be in Hindi, Hinglish, or English). Insert, update, or reorganize the requested content under the most relevant existing heading/section (only create a new heading if no existing section fits). Preserve all untouched sections, links, checkboxes, and Markdown formatting verbatim. Return ONLY the complete updated raw Markdown document—no explanations, no commentary, and no outer triple-backtick code fences.";
@@ -70,6 +73,87 @@ public final class GeminiMarkdownHelper {
             throw new IOException("Gemini network request failed: " + exception.getMessage(), exception);
         } finally {
             connection.disconnect();
+        }
+    }
+
+    public static List<String> fetchAvailableModels(final String apiKey) throws IOException {
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            throw new IOException("Enter your Gemini API key to fetch available models.");
+        }
+        if (apiKey.indexOf('\r') >= 0 || apiKey.indexOf('\n') >= 0) {
+            throw new IOException("The Gemini API key must be a single line. Check AI Edit settings.");
+        }
+
+        final List<String> models = new ArrayList<>();
+        String pageToken = "";
+        do {
+            final String url = "https://generativelanguage.googleapis.com/v1beta/models"
+                    + (pageToken.isEmpty() ? "" : "?pageToken="
+                            + URLEncoder.encode(pageToken, "UTF-8").replace("+", "%20"));
+            final HttpURLConnection connection;
+            try {
+                connection = (HttpURLConnection) new URL(url).openConnection();
+            } catch (IOException exception) {
+                throw new IOException("Could not prepare the Gemini model listing request.", exception);
+            }
+
+            try {
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+                connection.setReadTimeout(CONNECT_TIMEOUT_MS);
+                connection.setRequestProperty("x-goog-api-key", apiKey);
+
+                final int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    final InputStream errorStream = connection.getErrorStream();
+                    final String errorBody = errorStream == null ? "" : readStream(errorStream);
+                    throw new IOException(httpErrorMessage(status, errorBody));
+                }
+                pageToken = appendAvailableModels(readStream(connection.getInputStream()), models);
+            } catch (IOException exception) {
+                if (exception.getMessage() != null && exception.getMessage().startsWith("Gemini")) {
+                    throw exception;
+                }
+                throw new IOException("Could not fetch Gemini models. Check your network connection and try again.",
+                        exception);
+            } finally {
+                connection.disconnect();
+            }
+        } while (!pageToken.isEmpty());
+
+        Collections.sort(models);
+        return models;
+    }
+
+    static String appendAvailableModels(final String response, final List<String> models) throws IOException {
+        try {
+            final JSONObject json = new JSONObject(response);
+            final JSONArray availableModels = json.optJSONArray("models");
+            if (availableModels != null) {
+                for (int index = 0; index < availableModels.length(); index++) {
+                    final JSONObject model = availableModels.optJSONObject(index);
+                    final JSONArray methods = model == null ? null : model.optJSONArray("supportedGenerationMethods");
+                    boolean supportsGeneration = false;
+                    if (methods != null) {
+                        for (int methodIndex = 0; methodIndex < methods.length(); methodIndex++) {
+                            if ("generateContent".equals(methods.optString(methodIndex))) {
+                                supportsGeneration = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (supportsGeneration) {
+                        final String name = model.optString("name", "");
+                        final String modelId = name.startsWith("models/") ? name.substring("models/".length()) : name;
+                        if (!modelId.isEmpty() && !models.contains(modelId)) {
+                            models.add(modelId);
+                        }
+                    }
+                }
+            }
+            return json.optString("nextPageToken", "");
+        } catch (JSONException exception) {
+            throw new IOException("Gemini returned an invalid model list: " + exception.getMessage(), exception);
         }
     }
 
