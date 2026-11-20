@@ -118,6 +118,9 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
     private MenuItem _saveMenuItem, _undoMenuItem, _redoMenuItem;
     private boolean _isPreviewVisible;
     private boolean _nextConvertToPrintMode = false;
+    // >>> AI_ASSISTANT_HOOK_START
+    private net.gsantner.markor.ai_assistant.AiAssistantModule aiAssistantModule;
+    // <<< AI_ASSISTANT_HOOK_END
 
     public DocumentEditAndViewFragment() {
         super();
@@ -126,6 +129,9 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
     @Override
     public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // >>> AI_ASSISTANT_HOOK_START
+        aiAssistantModule = new net.gsantner.markor.ai_assistant.AiAssistantModule(this);
+        // <<< AI_ASSISTANT_HOOK_END
         final Bundle args = getArguments();
         if (savedInstanceState != null && savedInstanceState.containsKey(SAVESTATE_DOCUMENT)) {
             _document = (Document) savedInstanceState.getSerializable(SAVESTATE_DOCUMENT);
@@ -352,6 +358,15 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         final boolean isExperimentalFeaturesEnabled = _appSettings.isExperimentalFeaturesEnabled();
         final boolean isText = !_document.isBinaryFileNoTextLoading();
+
+        // >>> AI_ASSISTANT_HOOK_START
+        final MenuItem aiEditItem = menu.add(Menu.NONE, Menu.NONE, Menu.NONE, "AI Edit");
+        aiEditItem.setVisible(isText && !_isPreviewVisible);
+        aiEditItem.setOnMenuItemClickListener(item -> {
+            aiAssistantModule.openEditorDialog(_hlEditor);
+            return true;
+        });
+        // <<< AI_ASSISTANT_HOOK_END
 
         menu.findItem(R.id.action_undo).setVisible(isText && _appSettings.isEditorHistoryEnabled());
         menu.findItem(R.id.action_redo).setVisible(isText && _appSettings.isEditorHistoryEnabled());
