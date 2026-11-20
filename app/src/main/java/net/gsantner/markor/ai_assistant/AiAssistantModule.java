@@ -42,7 +42,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -69,6 +72,7 @@ public final class AiAssistantModule {
     private final Fragment fragment;
     private final ActivityResultLauncher<Intent> voiceLauncher;
     private final AiSettingsStore settingsStore;
+    private final AiDiffHistoryStore diffHistoryStore;
     private EditText activeInstructionInput;
     private View floatingButton;
     private Runnable onAfterApply = () -> { };
@@ -80,6 +84,7 @@ public final class AiAssistantModule {
     public AiAssistantModule(final Fragment fragment) {
         this.fragment = fragment;
         settingsStore = new AiSettingsStore(fragment.requireContext());
+        diffHistoryStore = new AiDiffHistoryStore(fragment.requireContext());
         voiceLauncher = fragment.registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(), this::onVoiceResult);
     }
@@ -181,6 +186,21 @@ public final class AiAssistantModule {
         content.addView(statusRow);
 
         final TextView settingsButton = AiUiTheme.headerAction(context, "⚙");
+        settingsButton.setContentDescription("Settings");
+        final TextView allDiffsButton = createAllDiffsButton(context);
+        final LinearLayout headerActions = AiUiTheme.actionRow(context);
+        final LinearLayout.LayoutParams allDiffsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 36));
+        allDiffsParams.setMargins(0, 0, dp(context, 6), 0);
+        headerActions.addView(allDiffsButton, allDiffsParams);
+        headerActions.addView(settingsButton, new LinearLayout.LayoutParams(
+                dp(context, 40), dp(context, 40)));
+        IOException historyReadError = null;
+        try {
+            updateAllDiffsButton(allDiffsButton);
+        } catch (IOException exception) {
+            historyReadError = exception;
+        }
         final LinearLayout actions = AiUiTheme.actionRow(context);
         final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
         final Button voiceButton = AiUiTheme.button(context, "Mic", AiUiTheme.ButtonKind.MIC);
@@ -191,9 +211,13 @@ public final class AiAssistantModule {
         voiceParams.setMargins(dp(context, 4), 0, dp(context, 4), 0);
         actions.addView(voiceButton, voiceParams);
         actions.addView(runButton, AiUiTheme.weightedButtonParams(context));
-        final Dialog dialog = AiUiTheme.showDialog(context, "AI Assistant", content, actions, settingsButton);
+        final Dialog dialog = AiUiTheme.showDialog(context, "AI Assistant", content, actions, headerActions);
+        if (historyReadError != null) {
+            showError(historyReadError.getMessage());
+        }
         voiceButton.setOnClickListener(view -> startVoiceInput());
         settingsButton.setOnClickListener(view -> showSettingsDialog());
+        allDiffsButton.setOnClickListener(view -> showAllDiffsDialog(context, editText, allDiffsButton));
         cancelButton.setOnClickListener(view -> dialog.dismiss());
         dialog.setOnDismissListener(ignored -> {
             if (activeInstructionInput == instructions) {
@@ -251,7 +275,8 @@ public final class AiAssistantModule {
                                         Toast.LENGTH_SHORT).show();
                             }
                             handleIntentResult(editText, originalMarkdown, result, updatedMarkdown,
-                                    folderResults);
+                                    folderResults, instruction, providerResult.getUsedProviderId(),
+                                    providerResult.getUsedModelName());
                         }
                     });
                 } catch (IOException exception) {
@@ -329,20 +354,267 @@ public final class AiAssistantModule {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
+    private TextView createAllDiffsButton(final android.content.Context context) {
+        final TextView button = new TextView(context);
+        button.setText("All Diffs");
+        button.setTextColor(AiUiTheme.ACCENT);
+        button.setTextSize(12);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(context, 10), 0, dp(context, 10), 0);
+        button.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(AiUiTheme.ACCENT_PRESSED),
+                AiUiTheme.rounded(AiUiTheme.SECONDARY, dp(context, 18),
+                        AiUiTheme.SECONDARY_BORDER, dp(context, 1)), null));
+        button.setContentDescription("All Diffs");
+        button.setClickable(true);
+        button.setFocusable(true);
+        return button;
+    }
+
+    private void updateAllDiffsButton(final TextView button) throws IOException {
+        final int count = diffHistoryStore.getHistory(currentFile).size();
+        button.setText(count == 0 ? "All Diffs" : "All Diffs (" + count + ")");
+        button.setContentDescription("All Diffs, " + count + " saved edits");
+    }
+
+    private void showAllDiffsDialog(final android.content.Context context, final EditText editText,
+            final TextView allDiffsButton) {
+        final List<AiDiffHistoryStore.Entry> history;
+        try {
+            history = diffHistoryStore.getHistory(currentFile);
+        } catch (IOException exception) {
+            showError(exception.getMessage());
+            return;
+        }
+
+        final LinearLayout body = verticalLayout(context);
+        final Dialog[] historyDialog = new Dialog[1];
+        if (history.isEmpty()) {
+            final TextView emptyState = AiUiTheme.label(context,
+                    "No edits have been saved for this note yet.", 14);
+            emptyState.setTextColor(AiUiTheme.SECONDARY_TEXT);
+            emptyState.setGravity(Gravity.CENTER);
+            emptyState.setPadding(dp(context, 12), dp(context, 36), dp(context, 12), dp(context, 36));
+            body.addView(emptyState, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            for (AiDiffHistoryStore.Entry entry : history) {
+                final LinearLayout card = createHistoryCard(context, entry);
+                final LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                cardParams.setMargins(0, 0, 0, dp(context, 10));
+                body.addView(card, cardParams);
+                card.setOnClickListener(view -> showDiffDetailDialog(
+                        context, entry, editText, historyDialog[0]));
+            }
+        }
+
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button clearButton = AiUiTheme.button(context, "Clear History", AiUiTheme.ButtonKind.SECONDARY);
+        clearButton.setTextColor(AiUiTheme.ACCENT);
+        clearButton.setEnabled(!history.isEmpty());
+        final Button closeButton = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(clearButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(closeButton, AiUiTheme.weightedButtonParams(context));
+        historyDialog[0] = AiUiTheme.showDialog(context, "All Diffs", body, actions, null);
+        closeButton.setOnClickListener(view -> historyDialog[0].dismiss());
+        clearButton.setOnClickListener(view ->
+                showClearHistoryConfirmation(context, editText, historyDialog[0], allDiffsButton));
+    }
+
+    private LinearLayout createHistoryCard(final android.content.Context context,
+            final AiDiffHistoryStore.Entry entry) {
+        final LinearLayout card = verticalLayout(context);
+        card.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12));
+        card.setElevation(dp(context, 2));
+        final GradientDrawable cardShape = AiUiTheme.rounded(AiUiTheme.INPUT, dp(context, 12),
+                AiUiTheme.INPUT_BORDER, dp(context, 1));
+        card.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(AiUiTheme.ACCENT_PRESSED), cardShape, null));
+        card.setClickable(true);
+        card.setFocusable(true);
+
+        final LinearLayout titleRow = AiUiTheme.actionRow(context);
+        final SimpleDateFormat dateFormat = new SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault());
+        final TextView date = AiUiTheme.label(context,
+                dateFormat.format(new Date(entry.getTimestampMs())), 12);
+        date.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        titleRow.addView(date, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final TextView provider = AiUiTheme.label(context, displayProvider(entry.getProvider()), 11);
+        provider.setTextColor(AiUiTheme.ACCENT);
+        provider.setPadding(dp(context, 8), dp(context, 4), dp(context, 8), dp(context, 4));
+        provider.setBackground(AiUiTheme.rounded(Color.rgb(36, 19, 23), dp(context, 12),
+                AiUiTheme.SECONDARY_BORDER, dp(context, 1)));
+        titleRow.addView(provider);
+        card.addView(titleRow);
+
+        final TextView instruction = AiUiTheme.label(context,
+                entry.getInstruction().isEmpty() ? "No instruction recorded" : entry.getInstruction(), 14);
+        instruction.setMaxLines(2);
+        instruction.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        final LinearLayout.LayoutParams instructionParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        instructionParams.setMargins(0, dp(context, 8), 0, 0);
+        card.addView(instruction, instructionParams);
+
+        if (!entry.getModel().isEmpty()) {
+            final TextView model = AiUiTheme.label(context, entry.getModel(), 11);
+            model.setTextColor(AiUiTheme.SECONDARY_TEXT);
+            final LinearLayout.LayoutParams modelParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            modelParams.setMargins(0, dp(context, 4), 0, 0);
+            card.addView(model, modelParams);
+        }
+
+        final LinearLayout counts = AiUiTheme.actionRow(context);
+        final TextView added = AiUiTheme.label(context, "+" + entry.getAddedCount(), 12);
+        added.setTextColor(AiUiTheme.ADDED_TEXT);
+        added.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        final TextView removed = AiUiTheme.label(context, "-" + entry.getRemovedCount(), 12);
+        removed.setTextColor(AiUiTheme.REMOVED_TEXT);
+        removed.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        counts.addView(added);
+        final LinearLayout.LayoutParams removedParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        removedParams.setMargins(dp(context, 12), 0, 0, 0);
+        counts.addView(removed, removedParams);
+        final LinearLayout.LayoutParams countsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        countsParams.setMargins(0, dp(context, 8), 0, 0);
+        card.addView(counts, countsParams);
+        return card;
+    }
+
+    private void showDiffDetailDialog(final android.content.Context context,
+            final AiDiffHistoryStore.Entry entry, final EditText editText, final Dialog historyDialog) {
+        final LinearLayout body = verticalLayout(context);
+        final SimpleDateFormat dateFormat = new SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault());
+        final TextView timestamp = AiUiTheme.label(context,
+                dateFormat.format(new Date(entry.getTimestampMs())), 12);
+        timestamp.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        body.addView(timestamp);
+
+        final TextView instruction = AiUiTheme.label(context,
+                entry.getInstruction().isEmpty() ? "No instruction recorded" : entry.getInstruction(), 15);
+        final LinearLayout.LayoutParams instructionParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        instructionParams.setMargins(0, dp(context, 8), 0, dp(context, 12));
+        body.addView(instruction, instructionParams);
+
+        final LinearLayout diffCard = verticalLayout(context);
+        diffCard.setPadding(dp(context, 8), dp(context, 8), dp(context, 8), dp(context, 8));
+        diffCard.setBackground(AiUiTheme.inputBackground(context));
+        renderFormattedDiff(context, diffCard, entry.getDiffText());
+        body.addView(diffCard, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final LinearLayout footer = verticalLayout(context);
+        final Button copyButton = AiUiTheme.button(context, "Copy Diff", AiUiTheme.ButtonKind.SECONDARY);
+        final Button restoreButton = AiUiTheme.button(
+                context, "Restore Before This Edit", AiUiTheme.ButtonKind.PRIMARY);
+        final Button backButton = AiUiTheme.button(context, "Back", AiUiTheme.ButtonKind.SECONDARY);
+        addFooterButton(context, footer, copyButton);
+        addFooterButton(context, footer, restoreButton);
+        addFooterButton(context, footer, backButton);
+        final Dialog detailDialog = AiUiTheme.showDialog(context, "Diff Detail", body, footer, null);
+        copyButton.setOnClickListener(view -> {
+            final ClipboardManager clipboard = (ClipboardManager)
+                    context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                showError("Could not access the clipboard.");
+                return;
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("AI Edit Diff", entry.getDiffText()));
+            Toast.makeText(context, "Diff copied.", Toast.LENGTH_SHORT).show();
+        });
+        restoreButton.setOnClickListener(view ->
+                showRestoreConfirmation(context, entry, editText, detailDialog, historyDialog));
+        backButton.setOnClickListener(view -> detailDialog.dismiss());
+    }
+
+    private void showRestoreConfirmation(final android.content.Context context,
+            final AiDiffHistoryStore.Entry entry, final EditText editText, final Dialog detailDialog,
+            final Dialog historyDialog) {
+        final LinearLayout body = verticalLayout(context);
+        body.addView(AiUiTheme.label(context,
+                "Replace the current note with the snapshot from before this edit?", 14));
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button restoreButton = AiUiTheme.button(context, "Restore", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(restoreButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog confirmation = AiUiTheme.showDialog(context, "Restore Note", body, actions, null);
+        cancelButton.setOnClickListener(view -> confirmation.dismiss());
+        restoreButton.setOnClickListener(view -> {
+            editText.getText().replace(0, editText.getText().length(), entry.getBeforeSnapshot());
+            confirmation.dismiss();
+            detailDialog.dismiss();
+            historyDialog.dismiss();
+            onAfterApply.run();
+            Toast.makeText(context, "Note restored.", Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    private void showClearHistoryConfirmation(final android.content.Context context, final EditText editText,
+            final Dialog historyDialog, final TextView allDiffsButton) {
+        final LinearLayout body = verticalLayout(context);
+        body.addView(AiUiTheme.label(context,
+                "Permanently clear all saved edit history for this note?", 14));
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button clearButton = AiUiTheme.button(context, "Clear History", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(clearButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog confirmation = AiUiTheme.showDialog(context, "Clear Edit History", body, actions, null);
+        cancelButton.setOnClickListener(view -> confirmation.dismiss());
+        clearButton.setOnClickListener(view -> {
+            try {
+                diffHistoryStore.clearHistory(currentFile);
+                updateAllDiffsButton(allDiffsButton);
+            } catch (IOException exception) {
+                confirmation.dismiss();
+                showError(exception.getMessage());
+                return;
+            }
+            confirmation.dismiss();
+            historyDialog.dismiss();
+            showAllDiffsDialog(context, editText, allDiffsButton);
+        });
+    }
+
+    private static String displayProvider(final String providerId) {
+        final AiProviderRouter.Provider provider = AiProviderRouter.Provider.fromId(providerId);
+        return provider == null ? providerId : provider.getDisplayName();
+    }
+
+    private static void addFooterButton(final android.content.Context context, final LinearLayout footer,
+            final Button button) {
+        final LinearLayout row = AiUiTheme.actionRow(context);
+        row.addView(button, AiUiTheme.weightedButtonParams(context));
+        final LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rowParams.setMargins(0, 0, 0, dp(context, 6));
+        footer.addView(row, rowParams);
+    }
+
     private void handleIntentResult(final EditText editText, final String originalMarkdown,
             final GeminiMarkdownHelper.IntentResult result, final String updatedMarkdown,
-            final FolderSearchHelper.SearchResult folderResults) {
+            final FolderSearchHelper.SearchResult folderResults, final String instruction,
+            final String provider, final String model) {
         final android.content.Context context = fragment.getContext();
         if (context == null) {
             return;
         }
         if ("edit".equals(result.getMode())) {
-            showDiffPreview(editText, originalMarkdown, updatedMarkdown);
+            showDiffPreview(editText, originalMarkdown, updatedMarkdown, instruction, provider, model);
         } else if ("answer".equals(result.getMode())) {
             final String matchedFile = result.getMatchedFile() != null
                     ? result.getMatchedFile()
                     : folderResults == null ? null : folderResults.getBestMatch();
-            showAnswerDialog(editText, originalMarkdown, result.getAnswer(), matchedFile);
+            showAnswerDialog(editText, originalMarkdown, result.getAnswer(), matchedFile,
+                    instruction, provider, model);
         } else if ("navigate".equals(result.getMode())) {
             if (scrollCallback == null) {
                 Toast.makeText(context, "Could not jump to the requested section.",
@@ -655,7 +927,8 @@ public final class AiAssistantModule {
     }
 
     private void showAnswerDialog(final EditText editText, final String originalMarkdown,
-            final String answer, final String matchedFile) {
+            final String answer, final String matchedFile, final String instruction,
+            final String provider, final String model) {
         final android.content.Context context = fragment.getContext();
         if (context == null) {
             return;
@@ -708,7 +981,7 @@ public final class AiAssistantModule {
                                 .put("action", "append_end").put("target", "").put("content", appendContent)))
                                 .toString());
                 dialog.dismiss();
-                showDiffPreview(editText, originalMarkdown, updated);
+                showDiffPreview(editText, originalMarkdown, updated, instruction, provider, model);
             } catch (org.json.JSONException | IOException exception) {
                 showError(exception.getMessage());
             }
@@ -810,7 +1083,8 @@ public final class AiAssistantModule {
         }
     }
 
-    private void showDiffPreview(final EditText editText, final String original, final String updated) {
+    private void showDiffPreview(final EditText editText, final String original, final String updated,
+            final String instruction, final String provider, final String model) {
         final android.content.Context context = fragment.getContext();
         if (context == null) {
             return;
@@ -837,6 +1111,18 @@ public final class AiAssistantModule {
         final Dialog dialog = AiUiTheme.showDialog(context, "Diff Preview", body, actions, null);
         cancelButton.setOnClickListener(view -> dialog.dismiss());
         applyButton.setOnClickListener(view -> {
+            final String beforeApplying = editText.getText().toString();
+            if (!original.equals(beforeApplying)) {
+                showError("The note changed after this diff was prepared. Run the assistant again.");
+                return;
+            }
+            try {
+                diffHistoryStore.addEntry(
+                        currentFile, instruction, provider, model, beforeApplying, updated);
+            } catch (IOException exception) {
+                showError("Could not save this edit to history: " + exception.getMessage());
+                return;
+            }
             editText.getText().replace(0, editText.getText().length(), updated);
             dialog.dismiss();
             onAfterApply.run();
@@ -893,40 +1179,62 @@ public final class AiAssistantModule {
             return;
         }
         for (SimpleLineDiff.Line line : lines) {
-            final String prefix;
-            final int background;
-            final int foreground;
             switch (line.getType()) {
                 case ADDED:
-                    prefix = "+ ";
-                    background = AiUiTheme.ADDED_BACKGROUND;
-                    foreground = AiUiTheme.ADDED_TEXT;
+                    addDiffLine(context, preview, "+ " + line.getText(),
+                            AiUiTheme.ADDED_BACKGROUND, AiUiTheme.ADDED_TEXT);
                     break;
                 case REMOVED:
-                    prefix = "- ";
-                    background = AiUiTheme.REMOVED_BACKGROUND;
-                    foreground = AiUiTheme.REMOVED_TEXT;
+                    addDiffLine(context, preview, "- " + line.getText(),
+                            AiUiTheme.REMOVED_BACKGROUND, AiUiTheme.REMOVED_TEXT);
                     break;
                 default:
-                    prefix = "  ";
-                    background = AiUiTheme.UNCHANGED_BACKGROUND;
-                    foreground = AiUiTheme.UNCHANGED_TEXT;
+                    addDiffLine(context, preview, "  " + line.getText(),
+                            AiUiTheme.UNCHANGED_BACKGROUND, AiUiTheme.UNCHANGED_TEXT);
                     break;
             }
-            final TextView lineView = new TextView(context);
-            lineView.setText(prefix + line.getText());
-            lineView.setTextColor(foreground);
-            lineView.setTextSize(12.5f);
-            lineView.setTypeface(Typeface.MONOSPACE);
-            lineView.setLineSpacing(dp(context, 4), 1f);
-            lineView.setIncludeFontPadding(true);
-            lineView.setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 4));
-            lineView.setBackground(AiUiTheme.rounded(background, dp(context, 3), background, 0));
-            final LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lineParams.setMargins(0, 0, 0, dp(context, 2));
-            preview.addView(lineView, lineParams);
         }
+    }
+
+    private static void renderFormattedDiff(final android.content.Context context,
+            final LinearLayout preview, final String diffText) {
+        preview.removeAllViews();
+        if (diffText == null || diffText.isEmpty()) {
+            preview.addView(AiUiTheme.label(context, "(No diff available)", 13));
+            return;
+        }
+        final String[] lines = diffText.split("\n", -1);
+        for (int index = 0; index < lines.length; index++) {
+            final String line = lines[index];
+            if (line.isEmpty() && index == lines.length - 1) {
+                continue;
+            }
+            if (line.startsWith("+ ")) {
+                addDiffLine(context, preview, line, AiUiTheme.ADDED_BACKGROUND, AiUiTheme.ADDED_TEXT);
+            } else if (line.startsWith("- ")) {
+                addDiffLine(context, preview, line, AiUiTheme.REMOVED_BACKGROUND, AiUiTheme.REMOVED_TEXT);
+            } else {
+                addDiffLine(context, preview, line, AiUiTheme.UNCHANGED_BACKGROUND,
+                        AiUiTheme.UNCHANGED_TEXT);
+            }
+        }
+    }
+
+    private static void addDiffLine(final android.content.Context context, final LinearLayout preview,
+            final String text, final int background, final int foreground) {
+        final TextView lineView = new TextView(context);
+        lineView.setText(text);
+        lineView.setTextColor(foreground);
+        lineView.setTextSize(12.5f);
+        lineView.setTypeface(Typeface.MONOSPACE);
+        lineView.setLineSpacing(dp(context, 4), 1f);
+        lineView.setIncludeFontPadding(true);
+        lineView.setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 4));
+        lineView.setBackground(AiUiTheme.rounded(background, dp(context, 3), background, 0));
+        final LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lineParams.setMargins(0, 0, 0, dp(context, 2));
+        preview.addView(lineView, lineParams);
     }
 
     private static LinearLayout verticalLayout(final android.content.Context context) {

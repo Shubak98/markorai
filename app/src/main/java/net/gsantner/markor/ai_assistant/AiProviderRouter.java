@@ -117,6 +117,7 @@ public final class AiProviderRouter {
             try {
                 final GeminiMarkdownHelper.IntentResult result = request.generate(config);
                 return new Result(result, config.provider.getDisplayName(),
+                        config.provider.getId(), config.model,
                         failures.isEmpty() ? "" : buildFailoverNotice(config.provider, failures));
             } catch (IOException exception) {
                 if (isRetryable(exception)) {
@@ -244,12 +245,17 @@ public final class AiProviderRouter {
     public static final class Result {
         private final GeminiMarkdownHelper.IntentResult intentResult;
         private final String usedProviderName;
+        private final String usedProviderId;
+        private final String usedModelName;
         private final String failoverNotice;
 
         private Result(final GeminiMarkdownHelper.IntentResult intentResult,
-                final String usedProviderName, final String failoverNotice) {
+                final String usedProviderName, final String usedProviderId, final String usedModelName,
+                final String failoverNotice) {
             this.intentResult = intentResult;
             this.usedProviderName = usedProviderName;
+            this.usedProviderId = usedProviderId;
+            this.usedModelName = usedModelName;
             this.failoverNotice = failoverNotice;
         }
 
@@ -259,6 +265,14 @@ public final class AiProviderRouter {
 
         public String getUsedProviderName() {
             return usedProviderName;
+        }
+
+        public String getUsedProviderId() {
+            return usedProviderId;
+        }
+
+        public String getUsedModelName() {
+            return usedModelName;
         }
 
         public String getFailoverNotice() {

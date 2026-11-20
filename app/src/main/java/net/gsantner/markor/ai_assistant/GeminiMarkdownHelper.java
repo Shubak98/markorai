@@ -179,6 +179,14 @@ public final class GeminiMarkdownHelper {
         return asObject(parseJson(json), "response");
     }
 
+    static List<?> parseJsonArray(final String json) throws IOException {
+        final Object value = parseJson(json);
+        if (!(value instanceof List<?>)) {
+            throw new IOException("The AI provider returned invalid JSON: a JSON array is required.");
+        }
+        return (List<?>) value;
+    }
+
     private static Map<?, ?> asObject(final Object value, final String description) throws IOException {
         final Map<?, ?> object = asObjectOrNull(value);
         if (object == null) {
