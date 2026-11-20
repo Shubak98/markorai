@@ -8,6 +8,8 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class GeminiMarkdownHelperTest {
     @Test
@@ -35,5 +37,53 @@ public class GeminiMarkdownHelperTest {
 
         assertEquals(Arrays.asList("z-model", "a-model"), models);
         assertEquals("next token", nextPageToken);
+    }
+
+    @Test
+    public void appliesInsertAfterEdit() throws IOException {
+        assertEquals("# Topic\nExisting text\nNew text\n",
+                GeminiMarkdownHelper.applyEdits("# Topic\nExisting text\n",
+                        "{\"edits\":[{\"action\":\"insert_after\",\"target\":\"Existing text\","
+                                + "\"content\":\"\\nNew text\"}]}"));
+    }
+
+    @Test
+    public void appliesReplaceEdit() throws IOException {
+        assertEquals("# Topic\nUpdated text\n",
+                GeminiMarkdownHelper.applyEdits("# Topic\nOld text\n",
+                        "{\"edits\":[{\"action\":\"replace\",\"target\":\"Old text\","
+                                + "\"content\":\"Updated text\"}]}"));
+    }
+
+    @Test
+    public void appliesAppendEndEdit() throws IOException {
+        assertEquals("# Topic\nExisting text\nAdded at end",
+                GeminiMarkdownHelper.applyEdits("# Topic\nExisting text",
+                        "{\"edits\":[{\"action\":\"append_end\",\"target\":\"\","
+                                + "\"content\":\"\\nAdded at end\"}]}"));
+    }
+
+    @Test
+    public void appliesMultipleEditsAgainstOriginalMarkdown() throws IOException {
+        assertEquals("First updated\nSecond updated\n",
+                GeminiMarkdownHelper.applyEdits("First\nSecond\n",
+                        "{\"edits\":["
+                                + "{\"action\":\"replace\",\"target\":\"Second\",\"content\":\"Second updated\"},"
+                                + "{\"action\":\"replace\",\"target\":\"First\",\"content\":\"First updated\"}"
+                                + "]}"));
+    }
+
+    @Test
+    public void missingEditTargetReportsTargetWithoutChangingOriginal() throws IOException {
+        final String original = "# Topic\nExisting text\n";
+        try {
+            GeminiMarkdownHelper.applyEdits(original,
+                    "{\"edits\":[{\"action\":\"replace\",\"target\":\"Missing text\","
+                            + "\"content\":\"Updated text\"}]}");
+            fail("Expected a missing-target error");
+        } catch (IOException exception) {
+            assertTrue(exception.getMessage().contains("Missing text"));
+        }
+        assertEquals("# Topic\nExisting text\n", original);
     }
 }
