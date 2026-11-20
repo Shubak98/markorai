@@ -1,19 +1,19 @@
 package net.gsantner.markor.ai_assistant;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
-import android.text.SpannableStringBuilder;
-import android.text.style.BackgroundColorSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,7 +23,6 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -54,6 +53,10 @@ public final class AiAssistantModule {
 
     public interface OpenFileCallback {
         void open(File file);
+    }
+
+    private interface ModelSelectionCallback {
+        void onSelected(String model);
     }
 
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
@@ -106,12 +109,14 @@ public final class AiAssistantModule {
         button.setClickable(true);
         final GradientDrawable background = new GradientDrawable();
         background.setShape(GradientDrawable.OVAL);
-        background.setColor(Color.rgb(103, 80, 164));
-        button.setBackground(background);
-        button.setElevation(dp(context, 8));
+        background.setColor(AiUiTheme.ACCENT);
+        background.setStroke(dp(context, 2), Color.rgb(77, 0, 0));
+        button.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(AiUiTheme.ACCENT_PRESSED), background, null));
+        button.setElevation(dp(context, 7));
 
         final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                dp(context, 56), dp(context, 56), Gravity.BOTTOM | Gravity.RIGHT);
+                dp(context, 54), dp(context, 54), Gravity.BOTTOM | Gravity.RIGHT);
         params.setMargins(0, 0, dp(context, 20), dp(context, 24));
         final FrameLayout root = (FrameLayout) rootView;
         root.addView(button, params);
@@ -136,116 +141,133 @@ public final class AiAssistantModule {
         final LinearLayout content = verticalLayout(context);
         final String[] selectedMode = {"auto"};
         addModeChips(context, content, selectedMode);
-        final LinearLayout actions = new LinearLayout(context);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
+        addVerticalGap(context, content, 10);
 
         final EditText instructions = new EditText(context);
         instructions.setHint("Ask or instruct in Hindi, Hinglish, or English");
+        instructions.setTextColor(AiUiTheme.PRIMARY_TEXT);
+        instructions.setHintTextColor(Color.rgb(128, 128, 140));
         instructions.setGravity(Gravity.TOP | Gravity.START);
         instructions.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        instructions.setMinLines(4);
-        instructions.setMaxLines(8);
-        instructions.setPadding(dp(context, 12), dp(context, 8), dp(context, 12), dp(context, 8));
+        instructions.setMinLines(5);
+        instructions.setMaxLines(7);
+        instructions.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12));
+        instructions.setBackground(AiUiTheme.inputBackground(context));
         activeInstructionInput = instructions;
 
-        final Button voiceButton = new Button(context);
-        voiceButton.setText("Voice (Mic)");
-        final Button settingsButton = new Button(context);
-        settingsButton.setText("Settings");
-        actions.addView(voiceButton, weightedButtonParams(context));
-        actions.addView(settingsButton, weightedButtonParams(context));
-        content.addView(actions);
         content.addView(instructions, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final LinearLayout statusRow = new LinearLayout(context);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER);
         final ProgressBar progress = new ProgressBar(context);
         progress.setVisibility(View.GONE);
-        content.addView(progress, centeredParams());
+        progress.setIndeterminateTintList(ColorStateList.valueOf(AiUiTheme.ACCENT));
+        final LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                dp(context, 22), dp(context, 22));
+        progressParams.setMargins(0, dp(context, 12), dp(context, 8), 0);
+        statusRow.addView(progress, progressParams);
         final TextView progressLabel = new TextView(context);
         progressLabel.setText("Thinking...");
         progressLabel.setVisibility(View.GONE);
-        progressLabel.setGravity(Gravity.CENTER);
-        content.addView(progressLabel);
+        progressLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        statusRow.addView(progressLabel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(statusRow);
 
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-                .setTitle("AI Assistant")
-                .setView(content)
-                .setPositiveButton("Run Assistant", null)
-                .setNegativeButton("Cancel", null)
-                .create();
+        final TextView settingsButton = AiUiTheme.headerAction(context, "⚙");
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button voiceButton = AiUiTheme.button(context, "Mic", AiUiTheme.ButtonKind.MIC);
+        final Button runButton = AiUiTheme.button(context, "Run AI", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        final LinearLayout.LayoutParams voiceParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        voiceParams.setMargins(dp(context, 4), 0, dp(context, 4), 0);
+        actions.addView(voiceButton, voiceParams);
+        actions.addView(runButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "AI Assistant", content, actions, settingsButton);
         voiceButton.setOnClickListener(view -> startVoiceInput());
         settingsButton.setOnClickListener(view -> showSettingsDialog());
+        cancelButton.setOnClickListener(view -> dialog.dismiss());
         dialog.setOnDismissListener(ignored -> {
             if (activeInstructionInput == instructions) {
                 activeInstructionInput = null;
             }
         });
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    final String apiKey = settingsStore.getApiKey();
-                    if (apiKey.isEmpty()) {
-                        showSettingsDialog();
-                        return;
+        runButton.setOnClickListener(view -> {
+            final String apiKey = settingsStore.getApiKey();
+            if (apiKey.isEmpty()) {
+                showSettingsDialog();
+                return;
+            }
+            final String instruction = instructions.getText().toString().trim();
+            if (instruction.isEmpty()) {
+                Toast.makeText(context, "Enter an instruction before running the assistant.",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            final String originalMarkdown = editText.getText().toString();
+            final String model = settingsStore.getModel();
+            final String requestedMode = selectedMode[0];
+            runButton.setEnabled(false);
+            cancelButton.setEnabled(false);
+            voiceButton.setEnabled(false);
+            settingsButton.setEnabled(false);
+            instructions.setEnabled(false);
+            progress.setVisibility(View.VISIBLE);
+            progressLabel.setVisibility(View.VISIBLE);
+            final android.view.inputmethod.InputMethodManager inputMethodManager =
+                    (android.view.inputmethod.InputMethodManager)
+                            context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+            if (inputMethodManager != null) {
+                inputMethodManager.hideSoftInputFromWindow(instructions.getWindowToken(), 0);
+            }
+            EXECUTOR.execute(() -> {
+                try {
+                    final boolean searchFolder = "folder".equals(requestedMode)
+                            || ("auto".equals(requestedMode)
+                            && FolderSearchHelper.isFolderSearchQuery(instruction));
+                    final FolderSearchHelper.SearchResult folderResults = searchFolder
+                            ? FolderSearchHelper.search(currentFile.getParentFile(), instruction) : null;
+                    final String folderContext = folderResults == null ? ""
+                            : folderResults.getContext().isEmpty()
+                            ? "No relevant .md or .txt files matched the query in this folder."
+                            : folderResults.getContext();
+                    final GeminiMarkdownHelper.IntentResult result = GeminiMarkdownHelper.generateIntent(
+                            apiKey, model, originalMarkdown, instruction, requestedMode, folderContext);
+                    final String expectedMode = expectedIntentMode(requestedMode);
+                    if (expectedMode != null && !expectedMode.equals(result.getMode())) {
+                        throw new IOException("Gemini did not follow the selected mode. Please try again.");
                     }
-                    final String instruction = instructions.getText().toString().trim();
-                    if (instruction.isEmpty()) {
-                        Toast.makeText(context, "Enter an instruction before running the assistant.",
-                                Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    final String originalMarkdown = editText.getText().toString();
-                    final String model = settingsStore.getModel();
-                    final String requestedMode = selectedMode[0];
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-                    voiceButton.setEnabled(false);
-                    settingsButton.setEnabled(false);
-                    instructions.setEnabled(false);
-                    progress.setVisibility(View.VISIBLE);
-                    progressLabel.setVisibility(View.VISIBLE);
-                    EXECUTOR.execute(() -> {
-                        try {
-                            final boolean searchFolder = "folder".equals(requestedMode)
-                                    || ("auto".equals(requestedMode)
-                                    && FolderSearchHelper.isFolderSearchQuery(instruction));
-                            final FolderSearchHelper.SearchResult folderResults = searchFolder
-                                    ? FolderSearchHelper.search(currentFile.getParentFile(), instruction) : null;
-                            final String folderContext = folderResults == null ? ""
-                                    : folderResults.getContext().isEmpty()
-                                    ? "No relevant .md or .txt files matched the query in this folder."
-                                    : folderResults.getContext();
-                            final GeminiMarkdownHelper.IntentResult result = GeminiMarkdownHelper.generateIntent(
-                                    apiKey, model, originalMarkdown, instruction, requestedMode, folderContext);
-                            final String expectedMode = expectedIntentMode(requestedMode);
-                            if (expectedMode != null && !expectedMode.equals(result.getMode())) {
-                                throw new IOException("Gemini did not follow the selected mode. Please try again.");
-                            }
-                            final String updatedMarkdown = "edit".equals(result.getMode())
-                                    ? GeminiMarkdownHelper.applyEdits(originalMarkdown, result.getEditsJson())
-                                    : null;
-                            MAIN_HANDLER.post(() -> {
-                                dialog.dismiss();
-                                if (fragment.getContext() != null) {
-                                    handleIntentResult(editText, originalMarkdown, result, updatedMarkdown,
-                                            folderResults);
-                                }
-                            });
-                        } catch (IOException exception) {
-                            MAIN_HANDLER.post(() -> {
-                                if (!dialog.isShowing() || fragment.getContext() == null) {
-                                    return;
-                                }
-                                progress.setVisibility(View.GONE);
-                                progressLabel.setVisibility(View.GONE);
-                                voiceButton.setEnabled(true);
-                                settingsButton.setEnabled(true);
-                                instructions.setEnabled(true);
-                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
-                                showError(exception.getMessage());
-                            });
+                    final String updatedMarkdown = "edit".equals(result.getMode())
+                            ? GeminiMarkdownHelper.applyEdits(originalMarkdown, result.getEditsJson())
+                            : null;
+                    MAIN_HANDLER.post(() -> {
+                        dialog.dismiss();
+                        if (fragment.getContext() != null) {
+                            handleIntentResult(editText, originalMarkdown, result, updatedMarkdown,
+                                    folderResults);
                         }
                     });
-                }));
-        dialog.show();
+                } catch (IOException exception) {
+                    MAIN_HANDLER.post(() -> {
+                        if (!dialog.isShowing() || fragment.getContext() == null) {
+                            return;
+                        }
+                        progress.setVisibility(View.GONE);
+                        progressLabel.setVisibility(View.GONE);
+                        cancelButton.setEnabled(true);
+                        voiceButton.setEnabled(true);
+                        settingsButton.setEnabled(true);
+                        instructions.setEnabled(true);
+                        runButton.setEnabled(true);
+                        showError(exception.getMessage());
+                    });
+                }
+            });
+        });
         if (settingsStore.getApiKey().isEmpty()) {
             showSettingsDialog();
         }
@@ -277,24 +299,20 @@ public final class AiAssistantModule {
         horizontalScroll.setHorizontalScrollBarEnabled(false);
         final LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        for (String[] mode : modes) {
+        final TextView[] chips = new TextView[modes.length];
+        for (int modeIndex = 0; modeIndex < modes.length; modeIndex++) {
+            final String[] mode = modes[modeIndex];
             final TextView chip = new TextView(context);
+            chips[modeIndex] = chip;
             chip.setText(mode[1]);
             chip.setTextSize(13);
             chip.setGravity(Gravity.CENTER);
-            chip.setPadding(dp(context, 12), dp(context, 7), dp(context, 12), dp(context, 7));
-            final GradientDrawable background = new GradientDrawable();
-            background.setCornerRadius(dp(context, 20));
-            chip.setBackground(background);
+            AiUiTheme.styleChip(chip, modeIndex == 0);
             final String chipMode = mode[0];
             chip.setOnClickListener(view -> {
                 selectedMode[0] = chipMode;
-                for (int index = 0; index < row.getChildCount(); index++) {
-                    final TextView item = (TextView) row.getChildAt(index);
-                    final boolean active = modes[index][0].equals(selectedMode[0]);
-                    item.setTextColor(active ? Color.WHITE : Color.DKGRAY);
-                    ((GradientDrawable) item.getBackground()).setColor(active
-                            ? Color.rgb(103, 80, 164) : Color.rgb(238, 235, 244));
+                for (int index = 0; index < chips.length; index++) {
+                    AiUiTheme.styleChip(chips[index], modes[index][0].equals(selectedMode[0]));
                 }
             });
             row.addView(chip, new LinearLayout.LayoutParams(
@@ -306,7 +324,6 @@ public final class AiAssistantModule {
         horizontalScroll.addView(row);
         parent.addView(horizontalScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        row.getChildAt(0).performClick();
     }
 
     private void handleIntentResult(final EditText editText, final String originalMarkdown,
@@ -382,30 +399,33 @@ public final class AiAssistantModule {
             return;
         }
         final LinearLayout content = verticalLayout(context);
-        final TextView keyLabel = new TextView(context);
-        keyLabel.setText("Gemini API Key");
+        final TextView keyLabel = AiUiTheme.label(context, "Gemini API Key", 13);
+        keyLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
         final EditText apiKeyInput = new EditText(context);
         apiKeyInput.setSingleLine(true);
         apiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         apiKeyInput.setHint("Paste your API key");
+        styleInput(apiKeyInput, context);
         apiKeyInput.setText(settingsStore.getApiKey());
-        final TextView modelLabel = new TextView(context);
-        modelLabel.setText("Gemini Model ID");
+        final TextView modelLabel = AiUiTheme.label(context, "Gemini Model ID", 13);
+        modelLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
         final EditText modelInput = new EditText(context);
         modelInput.setSingleLine(true);
         modelInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         modelInput.setHint(AiSettingsStore.DEFAULT_MODEL);
+        styleInput(modelInput, context);
         modelInput.setText(settingsStore.getModel());
         final LinearLayout modelRow = new LinearLayout(context);
         modelRow.setOrientation(LinearLayout.HORIZONTAL);
         modelRow.addView(modelInput, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        final Button fetchModelsButton = new Button(context);
-        fetchModelsButton.setText("Fetch Models");
+        final Button fetchModelsButton = AiUiTheme.button(
+                context, "Fetch Models", AiUiTheme.ButtonKind.SECONDARY);
         modelRow.addView(fetchModelsButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         final ProgressBar modelProgress = new ProgressBar(context);
         modelProgress.setVisibility(View.GONE);
+        modelProgress.setIndeterminateTintList(ColorStateList.valueOf(AiUiTheme.ACCENT));
         final LinearLayout.LayoutParams modelProgressParams = new LinearLayout.LayoutParams(
                 dp(context, 24), dp(context, 24));
         modelProgressParams.gravity = Gravity.CENTER_VERTICAL;
@@ -413,15 +433,17 @@ public final class AiAssistantModule {
         modelRow.addView(modelProgress, modelProgressParams);
         content.addView(keyLabel);
         content.addView(apiKeyInput);
+        addVerticalGap(context, content, 16);
         content.addView(modelLabel);
         content.addView(modelRow);
 
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-                .setTitle("AI Assistant Settings")
-                .setView(content)
-                .setPositiveButton("Save", null)
-                .setNegativeButton("Cancel", null)
-                .create();
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button saveButton = AiUiTheme.button(context, "Save", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(saveButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "Settings", content, actions, null);
+        cancelButton.setOnClickListener(view -> dialog.dismiss());
         fetchModelsButton.setOnClickListener(view -> {
             final String typedApiKey = apiKeyInput.getText().toString().trim();
             final String apiKey = typedApiKey.isEmpty() ? settingsStore.getApiKey() : typedApiKey;
@@ -446,14 +468,7 @@ public final class AiAssistantModule {
                             return;
                         }
                         final String[] modelIds = models.toArray(new String[0]);
-                        new AlertDialog.Builder(context)
-                                .setTitle("Select a Gemini model")
-                                .setSingleChoiceItems(modelIds, -1, (picker, which) -> {
-                                    modelInput.setText(modelIds[which]);
-                                    picker.dismiss();
-                                })
-                                .setNegativeButton("Cancel", null)
-                                .show();
+                        showModelPicker(context, modelIds, model -> modelInput.setText(model));
                     });
                 } catch (IOException exception) {
                     MAIN_HANDLER.post(() -> {
@@ -467,29 +482,60 @@ public final class AiAssistantModule {
                 }
             });
         });
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    final String apiKey = apiKeyInput.getText().toString().trim();
-                    final String model = modelInput.getText().toString().trim();
-                    if (apiKey.isEmpty()) {
-                        apiKeyInput.setError("API key is required");
-                    } else if (model.isEmpty()) {
-                        modelInput.setError("Model ID is required");
-                    } else {
-                        settingsStore.save(apiKey, model);
-                        dialog.dismiss();
-                    }
-                }));
-        dialog.show();
+        saveButton.setOnClickListener(view -> {
+            final String apiKey = apiKeyInput.getText().toString().trim();
+            final String model = modelInput.getText().toString().trim();
+            if (apiKey.isEmpty()) {
+                apiKeyInput.setError("API key is required");
+            } else if (model.isEmpty()) {
+                modelInput.setError("Model ID is required");
+            } else {
+                settingsStore.save(apiKey, model);
+                dialog.dismiss();
+            }
+        });
     }
 
     private static void showModelFetchError(final android.content.Context context, final String message) {
-        new AlertDialog.Builder(context)
-                .setTitle("Could not fetch Gemini models")
-                .setMessage(message == null || message.isEmpty()
-                        ? "The Gemini model listing failed. Please try again." : message)
-                .setPositiveButton("OK", null)
-                .show();
+        final LinearLayout body = verticalLayout(context);
+        final TextView detail = AiUiTheme.label(context,
+                message == null || message.isEmpty()
+                        ? "The Gemini model listing failed. Please try again." : message, 14);
+        body.addView(detail);
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button close = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(close, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "Could Not Fetch Models", body, actions, null);
+        close.setOnClickListener(view -> dialog.dismiss());
+    }
+
+    private static void showModelPicker(final android.content.Context context, final String[] modelIds,
+            final ModelSelectionCallback selection) {
+        final LinearLayout body = verticalLayout(context);
+        final Dialog[] pickerDialog = new Dialog[1];
+        for (String modelId : modelIds) {
+            final TextView row = AiUiTheme.label(context, modelId, 15);
+            row.setPadding(dp(context, 12), dp(context, 13), dp(context, 12), dp(context, 13));
+            row.setBackground(new RippleDrawable(ColorStateList.valueOf(AiUiTheme.ACCENT_PRESSED),
+                    AiUiTheme.rounded(AiUiTheme.INPUT, dp(context, 12),
+                            AiUiTheme.INPUT_BORDER, dp(context, 1)), null));
+            row.setClickable(true);
+            row.setFocusable(true);
+            final LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rowParams.setMargins(0, 0, 0, dp(context, 8));
+            body.addView(row, rowParams);
+            row.setOnClickListener(view -> {
+                selection.onSelected(modelId);
+                pickerDialog[0].dismiss();
+            });
+        }
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        pickerDialog[0] = AiUiTheme.showDialog(context, "Select a Gemini Model", body, actions, null);
+        final Dialog dialog = pickerDialog[0];
+        cancelButton.setOnClickListener(view -> dialog.dismiss());
     }
 
     private void showAnswerDialog(final EditText editText, final String originalMarkdown,
@@ -503,47 +549,33 @@ public final class AiAssistantModule {
         answerText.setText(answer);
         answerText.setTextIsSelectable(true);
         answerText.setTextSize(16);
-        answerText.setPadding(dp(context, 8), dp(context, 8), dp(context, 8), dp(context, 8));
-        final ScrollView scrollView = new ScrollView(context);
-        scrollView.addView(answerText, new ScrollView.LayoutParams(
+        answerText.setTextColor(AiUiTheme.PRIMARY_TEXT);
+        answerText.setLineSpacing(dp(context, 3), 1f);
+        answerText.setPadding(dp(context, 14), dp(context, 14), dp(context, 14), dp(context, 14));
+        answerText.setBackground(AiUiTheme.inputBackground(context));
+        content.addView(answerText, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        content.addView(scrollView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 320)));
 
-        final LinearLayout buttonRows = new LinearLayout(context);
-        buttonRows.setOrientation(LinearLayout.VERTICAL);
-        final LinearLayout firstRow = new LinearLayout(context);
-        firstRow.setOrientation(LinearLayout.HORIZONTAL);
-        final LinearLayout secondRow = new LinearLayout(context);
-        secondRow.setOrientation(LinearLayout.HORIZONTAL);
-        final Button copyButton = new Button(context);
-        copyButton.setText("Copy");
-        final Button appendButton = new Button(context);
-        appendButton.setText("Append to Note");
-        final Button closeButton = new Button(context);
-        closeButton.setText("Close");
-        firstRow.addView(copyButton, weightedButtonParams(context));
-        firstRow.addView(appendButton, weightedButtonParams(context));
-        if (findMatchedFile(matchedFile) != null) {
-            final Button openButton = new Button(context);
-            openButton.setText("Open File");
-            secondRow.addView(openButton, weightedButtonParams(context));
-            openButton.setOnClickListener(view -> {
-                final File file = findMatchedFile(matchedFile);
-                if (file != null && openFileCallback != null) {
-                    openFileCallback.open(file);
-                }
-            });
+        final LinearLayout actions = new LinearLayout(context);
+        actions.setOrientation(LinearLayout.VERTICAL);
+        final LinearLayout firstRow = AiUiTheme.actionRow(context);
+        final LinearLayout secondRow = AiUiTheme.actionRow(context);
+        final Button copyButton = AiUiTheme.button(context, "Copy", AiUiTheme.ButtonKind.SECONDARY);
+        final Button appendButton = AiUiTheme.button(
+                context, "Append to Note", AiUiTheme.ButtonKind.PRIMARY);
+        final Button closeButton = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.SECONDARY);
+        firstRow.addView(copyButton, AiUiTheme.weightedButtonParams(context));
+        firstRow.addView(appendButton, AiUiTheme.weightedButtonParams(context));
+        final File matched = findMatchedFile(matchedFile);
+        final Button openButton = matched == null ? null
+                : AiUiTheme.button(context, "Open File", AiUiTheme.ButtonKind.SECONDARY);
+        if (openButton != null) {
+            secondRow.addView(openButton, AiUiTheme.weightedButtonParams(context));
         }
-        secondRow.addView(closeButton, weightedButtonParams(context));
-        buttonRows.addView(firstRow);
-        buttonRows.addView(secondRow);
-        content.addView(buttonRows);
-
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-                .setTitle("AI Answer")
-                .setView(content)
-                .create();
+        secondRow.addView(closeButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(firstRow);
+        actions.addView(secondRow);
+        final Dialog dialog = AiUiTheme.showDialog(context, "AI Answer", content, actions, null);
         copyButton.setOnClickListener(view -> {
             final ClipboardManager clipboard = (ClipboardManager)
                     context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
@@ -566,7 +598,14 @@ public final class AiAssistantModule {
             }
         });
         closeButton.setOnClickListener(view -> dialog.dismiss());
-        dialog.show();
+        if (openButton != null) {
+            openButton.setOnClickListener(view -> {
+                if (openFileCallback != null) {
+                    dialog.dismiss();
+                    openFileCallback.open(matched);
+                }
+            });
+        }
     }
 
     private File findMatchedFile(final String matchedFile) {
@@ -593,37 +632,39 @@ public final class AiAssistantModule {
         final EditText filenameInput = new EditText(context);
         filenameInput.setSingleLine(true);
         filenameInput.setHint("New note filename");
+        styleInput(filenameInput, context);
         filenameInput.setText(GeminiMarkdownHelper.sanitizeNoteFilename(requestedFilename));
         final TextView preview = new TextView(context);
         preview.setText(noteContent);
         preview.setTextIsSelectable(true);
         preview.setTypeface(Typeface.MONOSPACE);
-        preview.setPadding(dp(context, 10), dp(context, 10), dp(context, 10), dp(context, 10));
-        final ScrollView previewScroll = new ScrollView(context);
-        previewScroll.addView(preview, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        preview.setTextColor(AiUiTheme.PRIMARY_TEXT);
+        preview.setTextSize(13);
+        preview.setLineSpacing(dp(context, 3), 1f);
+        preview.setPadding(dp(context, 14), dp(context, 14), dp(context, 14), dp(context, 14));
+        preview.setBackground(AiUiTheme.inputBackground(context));
         content.addView(filenameInput);
-        content.addView(previewScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 320)));
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-                .setTitle("Preview New Note")
-                .setView(content)
-                .setPositiveButton("Create & Open", null)
-                .setNegativeButton("Cancel", null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(view -> {
-                    try {
-                        final File created = createNote(filenameInput.getText().toString(), noteContent);
-                        dialog.dismiss();
-                        if (openFileCallback != null) {
-                            openFileCallback.open(created);
-                        }
-                    } catch (IOException exception) {
-                        showError(exception.getMessage());
-                    }
-                }));
-        dialog.show();
+        addVerticalGap(context, content, 12);
+        content.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button createButton = AiUiTheme.button(context, "Create & Open", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(createButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "Preview New Note", content, actions, null);
+        cancelButton.setOnClickListener(view -> dialog.dismiss());
+        createButton.setOnClickListener(view -> {
+            try {
+                final File created = createNote(filenameInput.getText().toString(), noteContent);
+                dialog.dismiss();
+                if (openFileCallback != null) {
+                    openFileCallback.open(created);
+                }
+            } catch (IOException exception) {
+                showError(exception.getMessage());
+            }
+        });
     }
 
     private File createNote(final String requestedFilename, final String content) throws IOException {
@@ -658,110 +699,140 @@ public final class AiAssistantModule {
         if (context == null) {
             return;
         }
-        final TextView preview = new TextView(context);
-        preview.setTextSize(14);
-        preview.setTypeface(Typeface.MONOSPACE);
-        preview.setTextIsSelectable(true);
-        preview.setPadding(dp(context, 12), dp(context, 12), dp(context, 12), dp(context, 12));
-        final ScrollView scrollView = new ScrollView(context);
-        scrollView.addView(preview, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-                .setTitle("Diff Preview")
-                .setView(scrollView)
-                .setPositiveButton("Apply Changes", null)
-                .setNegativeButton("Cancel", null)
-                .setNeutralButton("Full Preview", null)
-                .create();
-        final boolean[] fullPreview = {false};
-        dialog.setOnShowListener(ignored -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-                editText.getText().replace(0, editText.getText().length(), updated);
-                dialog.dismiss();
-                onAfterApply.run();
-            });
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
-                fullPreview[0] = !fullPreview[0];
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
-                        .setText(fullPreview[0] ? "Diff View" : "Full Preview");
-                preview.setText(fullPreview[0] ? updated : buildDiffText(original, updated));
-                scrollView.scrollTo(0, 0);
-            });
-            preview.setText(buildDiffText(original, updated));
+        final LinearLayout body = verticalLayout(context);
+        final LinearLayout toggle = AiUiTheme.actionRow(context);
+        final Button diffButton = AiUiTheme.button(context, "Diff View", AiUiTheme.ButtonKind.PRIMARY);
+        final Button fullButton = AiUiTheme.button(context, "Full Preview", AiUiTheme.ButtonKind.SECONDARY);
+        toggle.addView(diffButton, AiUiTheme.weightedButtonParams(context));
+        toggle.addView(fullButton, AiUiTheme.weightedButtonParams(context));
+        body.addView(toggle);
+        final LinearLayout preview = verticalLayout(context);
+        final LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        previewParams.setMargins(0, dp(context, 12), 0, 0);
+        body.addView(preview, previewParams);
+        renderDiffPreview(context, preview, original, updated, false);
+
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        final Button applyButton = AiUiTheme.button(context, "Apply Changes", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(applyButton, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "Diff Preview", body, actions, null);
+        cancelButton.setOnClickListener(view -> dialog.dismiss());
+        applyButton.setOnClickListener(view -> {
+            editText.getText().replace(0, editText.getText().length(), updated);
+            dialog.dismiss();
+            onAfterApply.run();
         });
-        dialog.show();
+        diffButton.setOnClickListener(view -> {
+            AiUiTheme.styleButton(diffButton, AiUiTheme.ButtonKind.PRIMARY);
+            AiUiTheme.styleButton(fullButton, AiUiTheme.ButtonKind.SECONDARY);
+            renderDiffPreview(context, preview, original, updated, false);
+        });
+        fullButton.setOnClickListener(view -> {
+            AiUiTheme.styleButton(diffButton, AiUiTheme.ButtonKind.SECONDARY);
+            AiUiTheme.styleButton(fullButton, AiUiTheme.ButtonKind.PRIMARY);
+            renderDiffPreview(context, preview, original, updated, true);
+        });
     }
 
     private void showError(final String message) {
         final android.content.Context context = fragment.getContext();
-        if (context != null) {
-            new AlertDialog.Builder(context)
-                    .setTitle("AI Assistant Failed")
-                    .setMessage(message == null || message.isEmpty()
-                            ? "The Gemini request failed. Please try again." : message)
-                    .setPositiveButton("OK", null)
-                    .show();
+        if (context == null) {
+            return;
         }
+        final LinearLayout body = verticalLayout(context);
+        final TextView detail = AiUiTheme.label(context,
+                message == null || message.isEmpty()
+                        ? "The Gemini request failed. Please try again." : message, 14);
+        body.addView(detail);
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button close = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(close, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "AI Assistant Failed", body, actions, null);
+        close.setOnClickListener(view -> dialog.dismiss());
     }
 
-    private static SpannableStringBuilder buildDiffText(final String original, final String updated) {
-        final SpannableStringBuilder text = new SpannableStringBuilder();
+    private static void renderDiffPreview(final android.content.Context context, final LinearLayout preview,
+            final String original, final String updated, final boolean fullPreview) {
+        preview.removeAllViews();
         if (original.equals(updated)) {
-            return text.append("(No changes)");
+            final TextView unchanged = AiUiTheme.label(context, "(No changes)", 13);
+            preview.addView(unchanged);
+            return;
+        }
+        if (fullPreview) {
+            final TextView text = AiUiTheme.label(context, updated, 14);
+            text.setTypeface(Typeface.MONOSPACE);
+            text.setLineSpacing(dp(context, 4), 1f);
+            text.setPadding(dp(context, 12), dp(context, 12), dp(context, 12), dp(context, 12));
+            text.setBackground(AiUiTheme.inputBackground(context));
+            preview.addView(text, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return;
         }
         final List<SimpleLineDiff.Line> lines = SimpleLineDiff.diff(original, updated);
         if (lines.isEmpty()) {
-            return text.append("(No changes)");
+            return;
         }
         for (SimpleLineDiff.Line line : lines) {
-            final int start = text.length();
             final String prefix;
             final int background;
+            final int foreground;
             switch (line.getType()) {
                 case ADDED:
                     prefix = "+ ";
-                    background = Color.rgb(232, 247, 234);
+                    background = AiUiTheme.ADDED_BACKGROUND;
+                    foreground = AiUiTheme.ADDED_TEXT;
                     break;
                 case REMOVED:
                     prefix = "- ";
-                    background = Color.rgb(253, 235, 235);
+                    background = AiUiTheme.REMOVED_BACKGROUND;
+                    foreground = AiUiTheme.REMOVED_TEXT;
                     break;
                 default:
                     prefix = "  ";
-                    background = Color.TRANSPARENT;
+                    background = AiUiTheme.UNCHANGED_BACKGROUND;
+                    foreground = AiUiTheme.UNCHANGED_TEXT;
                     break;
             }
-            text.append(prefix).append(line.getText()).append('\n');
-            if (line.getType() != SimpleLineDiff.Type.UNCHANGED) {
-                text.setSpan(new BackgroundColorSpan(background), start, text.length(), 0);
-            }
+            final TextView lineView = new TextView(context);
+            lineView.setText(prefix + line.getText());
+            lineView.setTextColor(foreground);
+            lineView.setTextSize(12.5f);
+            lineView.setTypeface(Typeface.MONOSPACE);
+            lineView.setLineSpacing(dp(context, 4), 1f);
+            lineView.setIncludeFontPadding(true);
+            lineView.setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 4));
+            lineView.setBackground(AiUiTheme.rounded(background, dp(context, 3), background, 0));
+            final LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lineParams.setMargins(0, 0, 0, dp(context, 2));
+            preview.addView(lineView, lineParams);
         }
-        return text;
     }
 
     private static LinearLayout verticalLayout(final android.content.Context context) {
         final LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(context, 20), dp(context, 8), dp(context, 20), dp(context, 8));
         return layout;
     }
 
-    private static LinearLayout.LayoutParams weightedButtonParams(
-            final android.content.Context context) {
-        final LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        params.setMargins(dp(context, 4), 0, dp(context, 4), dp(context, 8));
-        return params;
+    private static void styleInput(final EditText input, final android.content.Context context) {
+        input.setTextColor(AiUiTheme.PRIMARY_TEXT);
+        input.setHintTextColor(AiUiTheme.SECONDARY_TEXT);
+        input.setPadding(dp(context, 14), dp(context, 11), dp(context, 14), dp(context, 11));
+        input.setBackground(AiUiTheme.inputBackground(context));
     }
 
-    private static LinearLayout.LayoutParams centeredParams() {
-        final LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.gravity = Gravity.CENTER;
-        return params;
+    private static void addVerticalGap(final android.content.Context context, final LinearLayout parent,
+            final int heightDp) {
+        parent.addView(new View(context), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(context, heightDp)));
     }
 
     private static int dp(final android.content.Context context, final int value) {
-        return (int) (value * context.getResources().getDisplayMetrics().density + 0.5f);
+        return AiUiTheme.dp(context, value);
     }
 }
