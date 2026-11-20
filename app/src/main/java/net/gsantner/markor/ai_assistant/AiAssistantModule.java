@@ -14,10 +14,14 @@ import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -197,11 +201,6 @@ public final class AiAssistantModule {
             }
         });
         runButton.setOnClickListener(view -> {
-            final String apiKey = settingsStore.getApiKey();
-            if (apiKey.isEmpty()) {
-                showSettingsDialog();
-                return;
-            }
             final String instruction = instructions.getText().toString().trim();
             if (instruction.isEmpty()) {
                 Toast.makeText(context, "Enter an instruction before running the assistant.",
@@ -209,7 +208,6 @@ public final class AiAssistantModule {
                 return;
             }
             final String originalMarkdown = editText.getText().toString();
-            final String model = settingsStore.getModel();
             final String requestedMode = selectedMode[0];
             runButton.setEnabled(false);
             cancelButton.setEnabled(false);
@@ -235,11 +233,12 @@ public final class AiAssistantModule {
                             : folderResults.getContext().isEmpty()
                             ? "No relevant .md or .txt files matched the query in this folder."
                             : folderResults.getContext();
-                    final GeminiMarkdownHelper.IntentResult result = GeminiMarkdownHelper.generateIntent(
-                            apiKey, model, originalMarkdown, instruction, requestedMode, folderContext);
+                    final AiProviderRouter.Result providerResult = new AiProviderRouter(settingsStore)
+                            .generateIntent(originalMarkdown, instruction, requestedMode, folderContext);
+                    final GeminiMarkdownHelper.IntentResult result = providerResult.getIntentResult();
                     final String expectedMode = expectedIntentMode(requestedMode);
                     if (expectedMode != null && !expectedMode.equals(result.getMode())) {
-                        throw new IOException("Gemini did not follow the selected mode. Please try again.");
+                        throw new IOException("The AI provider did not follow the selected mode. Please try again.");
                     }
                     final String updatedMarkdown = "edit".equals(result.getMode())
                             ? GeminiMarkdownHelper.applyEdits(originalMarkdown, result.getEditsJson())
@@ -247,6 +246,10 @@ public final class AiAssistantModule {
                     MAIN_HANDLER.post(() -> {
                         dialog.dismiss();
                         if (fragment.getContext() != null) {
+                            if (!providerResult.getFailoverNotice().isEmpty()) {
+                                Toast.makeText(context, providerResult.getFailoverNotice(),
+                                        Toast.LENGTH_SHORT).show();
+                            }
                             handleIntentResult(editText, originalMarkdown, result, updatedMarkdown,
                                     folderResults);
                         }
@@ -268,7 +271,7 @@ public final class AiAssistantModule {
                 }
             });
         });
-        if (settingsStore.getApiKey().isEmpty()) {
+        if (!settingsStore.hasConfiguredProviders()) {
             showSettingsDialog();
         }
     }
@@ -358,7 +361,7 @@ public final class AiAssistantModule {
         } else if ("create_note".equals(result.getMode())) {
             showNewNotePreview(result.getFilename(), result.getNoteContent());
         } else {
-            showError("Gemini returned an unsupported intent.");
+            showError("The AI provider returned an unsupported intent.");
         }
     }
 
@@ -399,43 +402,51 @@ public final class AiAssistantModule {
             return;
         }
         final LinearLayout content = verticalLayout(context);
-        final TextView keyLabel = AiUiTheme.label(context, "Gemini API Key", 13);
-        keyLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
-        final EditText apiKeyInput = new EditText(context);
-        apiKeyInput.setSingleLine(true);
-        apiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        apiKeyInput.setHint("Paste your API key");
-        styleInput(apiKeyInput, context);
-        apiKeyInput.setText(settingsStore.getApiKey());
-        final TextView modelLabel = AiUiTheme.label(context, "Gemini Model ID", 13);
-        modelLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
-        final EditText modelInput = new EditText(context);
-        modelInput.setSingleLine(true);
-        modelInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        modelInput.setHint(AiSettingsStore.DEFAULT_MODEL);
-        styleInput(modelInput, context);
-        modelInput.setText(settingsStore.getModel());
-        final LinearLayout modelRow = new LinearLayout(context);
-        modelRow.setOrientation(LinearLayout.HORIZONTAL);
-        modelRow.addView(modelInput, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        final Button fetchModelsButton = AiUiTheme.button(
-                context, "Fetch Models", AiUiTheme.ButtonKind.SECONDARY);
-        modelRow.addView(fetchModelsButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        final ProgressBar modelProgress = new ProgressBar(context);
-        modelProgress.setVisibility(View.GONE);
-        modelProgress.setIndeterminateTintList(ColorStateList.valueOf(AiUiTheme.ACCENT));
-        final LinearLayout.LayoutParams modelProgressParams = new LinearLayout.LayoutParams(
-                dp(context, 24), dp(context, 24));
-        modelProgressParams.gravity = Gravity.CENTER_VERTICAL;
-        modelProgressParams.setMargins(dp(context, 8), 0, 0, 0);
-        modelRow.addView(modelProgress, modelProgressParams);
-        content.addView(keyLabel);
-        content.addView(apiKeyInput);
-        addVerticalGap(context, content, 16);
-        content.addView(modelLabel);
-        content.addView(modelRow);
+        final TextView providerLabel = AiUiTheme.label(context, "Primary Provider", 13);
+        providerLabel.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        content.addView(providerLabel);
+        final HorizontalScrollView providerScroll = new HorizontalScrollView(context);
+        providerScroll.setHorizontalScrollBarEnabled(false);
+        final LinearLayout providerRow = AiUiTheme.actionRow(context);
+        providerScroll.addView(providerRow);
+        content.addView(providerScroll);
+
+        final CheckBox autoFailover = new CheckBox(context);
+        autoFailover.setText("Auto-Failover on 429 / errors (including timeouts)");
+        autoFailover.setTextColor(AiUiTheme.PRIMARY_TEXT);
+        autoFailover.setButtonTintList(ColorStateList.valueOf(AiUiTheme.ACCENT));
+        autoFailover.setChecked(settingsStore.isAutoFailoverEnabled());
+        content.addView(autoFailover);
+        addVerticalGap(context, content, 10);
+
+        final AiProviderRouter.Provider[] providers = AiProviderRouter.Provider.values();
+        final ProviderForm[] forms = new ProviderForm[providers.length];
+        final TextView[] providerChips = new TextView[providers.length];
+        final LinearLayout formsContainer = verticalLayout(context);
+        final String[] selectedProvider = {settingsStore.getPrimaryProvider()};
+        for (int index = 0; index < providers.length; index++) {
+            final AiProviderRouter.Provider provider = providers[index];
+            final ProviderForm form = createProviderForm(context, provider);
+            forms[index] = form;
+            formsContainer.addView(form.container);
+            final TextView chip = new TextView(context);
+            providerChips[index] = chip;
+            chip.setText(providerChipText(provider,
+                    !settingsStore.getProviderApiKey(provider).isEmpty()));
+            chip.setTextSize(13);
+            chip.setGravity(Gravity.CENTER);
+            AiUiTheme.styleChip(chip, provider.getId().equals(selectedProvider[0]));
+            final LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chipParams.setMargins(0, dp(context, 7), dp(context, 7), dp(context, 9));
+            providerRow.addView(chip, chipParams);
+            chip.setOnClickListener(view -> {
+                selectedProvider[0] = provider.getId();
+                updateProviderSelection(providers, forms, providerChips, selectedProvider[0]);
+            });
+        }
+        content.addView(formsContainer);
+        updateProviderSelection(providers, forms, providerChips, selectedProvider[0]);
 
         final LinearLayout actions = AiUiTheme.actionRow(context);
         final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
@@ -444,63 +455,168 @@ public final class AiAssistantModule {
         actions.addView(saveButton, AiUiTheme.weightedButtonParams(context));
         final Dialog dialog = AiUiTheme.showDialog(context, "Settings", content, actions, null);
         cancelButton.setOnClickListener(view -> dialog.dismiss());
-        fetchModelsButton.setOnClickListener(view -> {
-            final String typedApiKey = apiKeyInput.getText().toString().trim();
-            final String apiKey = typedApiKey.isEmpty() ? settingsStore.getApiKey() : typedApiKey;
-            if (apiKey.isEmpty()) {
-                showModelFetchError(context, "Enter your Gemini API key before fetching models.");
-                return;
-            }
-            fetchModelsButton.setEnabled(false);
-            modelProgress.setVisibility(View.VISIBLE);
-            EXECUTOR.execute(() -> {
-                try {
-                    final List<String> models = GeminiMarkdownHelper.fetchAvailableModels(apiKey);
-                    MAIN_HANDLER.post(() -> {
-                        if (!dialog.isShowing() || fragment.getContext() == null) {
-                            return;
-                        }
-                        modelProgress.setVisibility(View.GONE);
-                        fetchModelsButton.setEnabled(true);
-                        if (models.isEmpty()) {
-                            showModelFetchError(context,
-                                    "No models supporting generateContent are available for this API key.");
-                            return;
-                        }
-                        final String[] modelIds = models.toArray(new String[0]);
-                        showModelPicker(context, modelIds, model -> modelInput.setText(model));
-                    });
-                } catch (IOException exception) {
-                    MAIN_HANDLER.post(() -> {
-                        if (!dialog.isShowing() || fragment.getContext() == null) {
-                            return;
-                        }
-                        modelProgress.setVisibility(View.GONE);
-                        fetchModelsButton.setEnabled(true);
-                        showModelFetchError(context, exception.getMessage());
-                    });
-                }
-            });
-        });
+        for (int index = 0; index < providers.length; index++) {
+            final AiProviderRouter.Provider provider = providers[index];
+            final ProviderForm form = forms[index];
+            form.fetchModels.setOnClickListener(view -> fetchModels(context, dialog, provider, form));
+        }
         saveButton.setOnClickListener(view -> {
-            final String apiKey = apiKeyInput.getText().toString().trim();
-            final String model = modelInput.getText().toString().trim();
-            if (apiKey.isEmpty()) {
-                apiKeyInput.setError("API key is required");
-            } else if (model.isEmpty()) {
-                modelInput.setError("Model ID is required");
-            } else {
-                settingsStore.save(apiKey, model);
-                dialog.dismiss();
+            for (int index = 0; index < providers.length; index++) {
+                final ProviderForm form = forms[index];
+                settingsStore.saveProvider(providers[index], form.apiKey.getText().toString(),
+                        form.model.getText().toString(),
+                        form.baseUrl == null ? "" : form.baseUrl.getText().toString());
+            }
+            settingsStore.savePreferences(selectedProvider[0], autoFailover.isChecked());
+            dialog.dismiss();
+        });
+    }
+
+    private ProviderForm createProviderForm(final android.content.Context context,
+            final AiProviderRouter.Provider provider) {
+        final LinearLayout container = verticalLayout(context);
+        final EditText baseUrl = provider == AiProviderRouter.Provider.CUSTOM
+                ? new EditText(context) : null;
+        if (baseUrl != null) {
+            addSettingsLabel(context, container, "Base URL");
+            baseUrl.setSingleLine(true);
+            baseUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+            baseUrl.setHint("https://api.example.com/v1");
+            styleInput(baseUrl, context);
+            baseUrl.setText(settingsStore.getProviderBaseUrl(provider));
+            container.addView(baseUrl);
+            addVerticalGap(context, container, 10);
+        }
+
+        addSettingsLabel(context, container, "API Key");
+        final EditText apiKey = new EditText(context);
+        apiKey.setSingleLine(true);
+        apiKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        apiKey.setHint("Paste your " + provider.getDisplayName() + " API key");
+        styleInput(apiKey, context);
+        apiKey.setText(settingsStore.getProviderApiKey(provider));
+        container.addView(apiKey);
+        addVerticalGap(context, container, 10);
+
+        addSettingsLabel(context, container, "Model ID");
+        final EditText model = new EditText(context);
+        model.setSingleLine(true);
+        model.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        model.setHint(provider.getDefaultModel().isEmpty() ? "Enter a model ID" : provider.getDefaultModel());
+        styleInput(model, context);
+        model.setText(settingsStore.getProviderModel(provider));
+        final LinearLayout modelRow = new LinearLayout(context);
+        modelRow.setOrientation(LinearLayout.HORIZONTAL);
+        modelRow.addView(model, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final Button fetchModels = AiUiTheme.button(context, "Fetch Models", AiUiTheme.ButtonKind.SECONDARY);
+        modelRow.addView(fetchModels, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        final ProgressBar progress = new ProgressBar(context);
+        progress.setVisibility(View.GONE);
+        progress.setIndeterminateTintList(ColorStateList.valueOf(AiUiTheme.ACCENT));
+        final LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                dp(context, 24), dp(context, 24));
+        progressParams.gravity = Gravity.CENTER_VERTICAL;
+        progressParams.setMargins(dp(context, 8), 0, 0, 0);
+        modelRow.addView(progress, progressParams);
+        container.addView(modelRow);
+        return new ProviderForm(container, baseUrl, apiKey, model, fetchModels, progress);
+    }
+
+    private void fetchModels(final android.content.Context context, final Dialog settingsDialog,
+            final AiProviderRouter.Provider provider, final ProviderForm form) {
+        final String apiKey = form.apiKey.getText().toString().trim();
+        if (apiKey.isEmpty()) {
+            showModelFetchError(context, "Enter your " + provider.getDisplayName()
+                    + " API key before fetching models.");
+            return;
+        }
+        final String baseUrl = form.baseUrl == null
+                ? provider.getDefaultBaseUrl() : form.baseUrl.getText().toString().trim();
+        form.fetchModels.setEnabled(false);
+        form.progress.setVisibility(View.VISIBLE);
+        EXECUTOR.execute(() -> {
+            try {
+                final List<String> models = provider == AiProviderRouter.Provider.GEMINI
+                        ? GeminiMarkdownHelper.fetchAvailableModels(apiKey)
+                        : OpenAiCompatibleHelper.fetchAvailableModels(provider.getDisplayName(), baseUrl, apiKey);
+                MAIN_HANDLER.post(() -> {
+                    if (!settingsDialog.isShowing() || fragment.getContext() == null) {
+                        return;
+                    }
+                    form.progress.setVisibility(View.GONE);
+                    form.fetchModels.setEnabled(true);
+                    if (models.isEmpty()) {
+                        showModelFetchError(context, "No available models were returned by "
+                                + provider.getDisplayName() + ".");
+                        return;
+                    }
+                    showModelPicker(context, models.toArray(new String[0]), form.model::setText);
+                });
+            } catch (IOException exception) {
+                MAIN_HANDLER.post(() -> {
+                    if (!settingsDialog.isShowing() || fragment.getContext() == null) {
+                        return;
+                    }
+                    form.progress.setVisibility(View.GONE);
+                    form.fetchModels.setEnabled(true);
+                    showModelFetchError(context, exception.getMessage());
+                });
             }
         });
+    }
+
+    private static void addSettingsLabel(final android.content.Context context, final LinearLayout parent,
+            final String text) {
+        final TextView label = AiUiTheme.label(context, text, 13);
+        label.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        parent.addView(label);
+    }
+
+    private static CharSequence providerChipText(final AiProviderRouter.Provider provider,
+            final boolean configured) {
+        final String value = provider.getDisplayName() + "  ●";
+        final SpannableString text = new SpannableString(value);
+        text.setSpan(new ForegroundColorSpan(configured
+                ? Color.rgb(110, 231, 183) : AiUiTheme.SECONDARY_TEXT),
+                value.length() - 1, value.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return text;
+    }
+
+    private static void updateProviderSelection(final AiProviderRouter.Provider[] providers,
+            final ProviderForm[] forms, final TextView[] chips, final String selectedProvider) {
+        for (int index = 0; index < providers.length; index++) {
+            final boolean selected = providers[index].getId().equals(selectedProvider);
+            AiUiTheme.styleChip(chips[index], selected);
+            forms[index].container.setVisibility(selected ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private static final class ProviderForm {
+        private final LinearLayout container;
+        private final EditText baseUrl;
+        private final EditText apiKey;
+        private final EditText model;
+        private final Button fetchModels;
+        private final ProgressBar progress;
+
+        private ProviderForm(final LinearLayout container, final EditText baseUrl, final EditText apiKey,
+                final EditText model, final Button fetchModels, final ProgressBar progress) {
+            this.container = container;
+            this.baseUrl = baseUrl;
+            this.apiKey = apiKey;
+            this.model = model;
+            this.fetchModels = fetchModels;
+            this.progress = progress;
+        }
     }
 
     private static void showModelFetchError(final android.content.Context context, final String message) {
         final LinearLayout body = verticalLayout(context);
         final TextView detail = AiUiTheme.label(context,
                 message == null || message.isEmpty()
-                        ? "The Gemini model listing failed. Please try again." : message, 14);
+                        ? "The provider model listing failed. Please try again." : message, 14);
         body.addView(detail);
         final LinearLayout actions = AiUiTheme.actionRow(context);
         final Button close = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.PRIMARY);

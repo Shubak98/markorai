@@ -59,6 +59,7 @@ public final class GeminiMarkdownHelper {
             throw networkError("Could not prepare the Gemini request", exception);
         }
 
+        final String response;
         try {
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -75,9 +76,11 @@ public final class GeminiMarkdownHelper {
             if (status < 200 || status >= 300) {
                 final InputStream errorStream = connection.getErrorStream();
                 final String errorBody = errorStream == null ? "" : readStream(errorStream);
-                throw new IOException(httpErrorMessage(status, errorBody));
+                throw new AiProviderRouter.ProviderFailureException(
+                        AiProviderRouter.Provider.GEMINI.getDisplayName(), status,
+                        httpErrorMessage(status, errorBody));
             }
-            return extractIntent(readStream(connection.getInputStream()));
+            response = readStream(connection.getInputStream());
         } catch (IOException exception) {
             if (exception.getMessage() != null && exception.getMessage().startsWith("Gemini")) {
                 throw exception;
@@ -86,18 +89,36 @@ public final class GeminiMarkdownHelper {
         } finally {
             connection.disconnect();
         }
+        return extractIntent(response);
+    }
+
+    static String getIntentSystemInstruction() {
+        return SYSTEM_INSTRUCTION;
+    }
+
+    static String buildIntentPrompt(final String markdown, final String instruction,
+            final String selectedMode, final String folderContext) {
+        return "Selected mode: " + selectedMode
+                + "\nFor selected mode \"edit\", output edit. For \"study\" or \"folder\", output answer. "
+                + "For \"jump\", output navigate. For \"new_note\", output create_note. "
+                + "Use supplied folder context for folder search. If folder context is supplied in Auto, answer from it. "
+                + "\"auto\" means choose the best action automatically.\n\n"
+                + "User instruction:\n" + instruction
+                + "\n\nCurrent Markdown document:\n" + markdown
+                + (folderContext == null || folderContext.isEmpty()
+                        ? "" : "\n\nFolder search context:\n" + folderContext);
     }
 
     public static IntentResult parseIntentResponse(final String response) throws IOException {
         final Map<?, ?> json = asObject(parseJson(response), "intent");
         final Object modeValue = json.get("mode");
         if (!(modeValue instanceof String)) {
-            throw new IOException("Gemini returned an intent without a valid \"mode\" string.");
+            throw new IOException("The AI provider returned an intent without a valid \"mode\" string.");
         }
         final String mode = (String) modeValue;
         if ("edit".equals(mode)) {
             if (!(json.get("edits") instanceof List<?>)) {
-                throw new IOException("Gemini returned an edit intent without an \"edits\" array.");
+                throw new IOException("The AI provider returned an edit intent without an \"edits\" array.");
             }
             return new IntentResult(mode, response, null, null, null, null, null, null);
         } else if ("answer".equals(mode)) {
@@ -110,7 +131,7 @@ public final class GeminiMarkdownHelper {
             return new IntentResult(mode, null, null, null, null, null,
                     requiredString(json, "filename"), requiredString(json, "content"));
         }
-        throw new IOException("Gemini returned an unsupported intent mode.");
+        throw new IOException("The AI provider returned an unsupported intent mode.");
     }
 
     public static String sanitizeNoteFilename(final String requestedName) {
@@ -131,7 +152,7 @@ public final class GeminiMarkdownHelper {
     private static String requiredString(final Map<?, ?> json, final String key) throws IOException {
         final Object value = json.get(key);
         if (!(value instanceof String) || ((String) value).trim().isEmpty()) {
-            throw new IOException("Gemini returned an intent without a valid \"" + key + "\" string.");
+            throw new IOException("The AI provider returned an intent without a valid \"" + key + "\" string.");
         }
         return (String) value;
     }
@@ -142,22 +163,27 @@ public final class GeminiMarkdownHelper {
             return null;
         }
         if (!(value instanceof String)) {
-            throw new IOException("Gemini returned an invalid \"" + key + "\" value.");
+            throw new IOException("The AI provider returned an invalid \"" + key + "\" value.");
         }
         return (String) value;
     }
 
     private static Object parseJson(final String json) throws IOException {
         if (json == null) {
-            throw new IOException("Gemini returned invalid JSON: response is missing.");
+            throw new IOException("The AI provider returned invalid JSON: response is missing.");
         }
         return new JsonParser(json).parse();
+    }
+
+    static Map<?, ?> parseJsonObject(final String json) throws IOException {
+        return asObject(parseJson(json), "response");
     }
 
     private static Map<?, ?> asObject(final Object value, final String description) throws IOException {
         final Map<?, ?> object = asObjectOrNull(value);
         if (object == null) {
-            throw new IOException("Gemini returned an invalid " + description + ": a JSON object is required.");
+            throw new IOException("The AI provider returned an invalid " + description
+                    + ": a JSON object is required.");
         }
         return object;
     }
@@ -395,7 +421,8 @@ public final class GeminiMarkdownHelper {
         }
 
         private IOException invalidJson(final String detail) {
-            return new IOException("Gemini returned invalid JSON at character " + position + ": " + detail + ".");
+            return new IOException("AI provider returned invalid JSON at character " + position
+                    + ": " + detail + ".");
         }
     }
 
@@ -486,7 +513,7 @@ public final class GeminiMarkdownHelper {
         final Map<?, ?> patchObject = asObject(parseJson(editsJson), "edit patch");
         final Object editsValue = patchObject.get("edits");
         if (!(editsValue instanceof List<?>)) {
-            throw new IOException("Gemini returned an invalid edit patch: the \"edits\" array is missing.");
+            throw new IOException("The AI provider returned an invalid edit patch: the \"edits\" array is missing.");
         }
         final List<?> edits = (List<?>) editsValue;
         final List<Patch> patches = new ArrayList<>();
@@ -580,17 +607,20 @@ public final class GeminiMarkdownHelper {
             for (int secondIndex = firstIndex + 1; secondIndex < patches.size(); secondIndex++) {
                 final Patch second = patches.get(secondIndex);
                 if (first.isInsertion() && second.isInsertion() && first.start == second.start) {
-                    throw new IOException("Gemini returned edits at the same position. No changes were applied.");
+                    throw new IOException("The AI provider returned edits at the same position. "
+                            + "No changes were applied.");
                 }
                 if (!first.isInsertion() && !second.isInsertion()
                         && first.start < second.end && second.start < first.end) {
-                    throw new IOException("Gemini returned overlapping edit targets. No changes were applied.");
+                    throw new IOException("The AI provider returned overlapping edit targets. "
+                            + "No changes were applied.");
                 }
                 if ((first.isInsertion() && !second.isInsertion()
                         && first.start > second.start && first.start < second.end)
                         || (second.isInsertion() && !first.isInsertion()
                                 && second.start > first.start && second.start < first.end)) {
-                    throw new IOException("Gemini returned an edit inside another edit target. No changes were applied.");
+                    throw new IOException("The AI provider returned an edit inside another edit target. "
+                            + "No changes were applied.");
                 }
             }
         }
@@ -625,7 +655,8 @@ public final class GeminiMarkdownHelper {
             return markdown;
         }
         final String language = trimmed.substring(3, firstLineEnd).trim();
-        if (!language.isEmpty() && !"markdown".equalsIgnoreCase(language) && !"md".equalsIgnoreCase(language)) {
+        if (!language.isEmpty() && !"markdown".equalsIgnoreCase(language)
+                && !"md".equalsIgnoreCase(language) && !"json".equalsIgnoreCase(language)) {
             return markdown;
         }
         return trimmed.substring(firstLineEnd + 1, trimmed.length() - 3).replaceFirst("\\r?\\n$", "");
@@ -634,18 +665,10 @@ public final class GeminiMarkdownHelper {
     private static JSONObject buildIntentRequest(final String markdown, final String instruction,
             final String selectedMode, final String folderContext) throws IOException {
         try {
-            final JSONObject systemPart = new JSONObject().put("text", SYSTEM_INSTRUCTION);
+            final JSONObject systemPart = new JSONObject().put("text", getIntentSystemInstruction());
             final JSONObject systemInstruction = new JSONObject()
                     .put("parts", new JSONArray().put(systemPart));
-            final String prompt = "Selected mode: " + selectedMode
-                    + "\nFor selected mode \"edit\", output edit. For \"study\" or \"folder\", output answer. "
-                    + "For \"jump\", output navigate. For \"new_note\", output create_note. "
-                    + "Use supplied folder context for folder search. If folder context is supplied in Auto, answer from it. "
-                    + "\"auto\" means choose the best action automatically.\n\n"
-                    + "User instruction:\n" + instruction
-                    + "\n\nCurrent Markdown document:\n" + markdown
-                    + (folderContext == null || folderContext.isEmpty()
-                            ? "" : "\n\nFolder search context:\n" + folderContext);
+            final String prompt = buildIntentPrompt(markdown, instruction, selectedMode, folderContext);
             final JSONObject contentPart = new JSONObject().put("text", prompt);
             final JSONObject content = new JSONObject()
                     .put("role", "user")
