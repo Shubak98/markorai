@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -16,6 +17,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -40,12 +42,61 @@ public final class AiAssistantModule {
     private final ActivityResultLauncher<Intent> voiceLauncher;
     private final AiSettingsStore settingsStore;
     private EditText activeInstructionInput;
+    private View floatingButton;
+    private Runnable onAfterApply = () -> { };
+    private boolean isViewModeVisible;
 
     public AiAssistantModule(final Fragment fragment) {
         this.fragment = fragment;
         settingsStore = new AiSettingsStore(fragment.requireContext());
         voiceLauncher = fragment.registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(), this::onVoiceResult);
+    }
+
+    public void attachFloatingButton(final View rootView, final EditText editText, final Runnable onAfterApply) {
+        if (fragment.getContext() == null || rootView == null || editText == null) {
+            return;
+        }
+        if (!(rootView instanceof FrameLayout)) {
+            throw new IllegalArgumentException("AI Edit floating button requires a FrameLayout root view.");
+        }
+        if (floatingButton != null && floatingButton.getParent() instanceof ViewGroup) {
+            ((ViewGroup) floatingButton.getParent()).removeView(floatingButton);
+        }
+        this.onAfterApply = onAfterApply == null ? () -> { } : onAfterApply;
+
+        final android.content.Context context = fragment.requireContext();
+        final TextView button = new TextView(context);
+        button.setText("AI");
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setContentDescription("AI Edit");
+        button.setFocusable(true);
+        button.setClickable(true);
+        final GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(Color.rgb(103, 80, 164));
+        button.setBackground(background);
+        button.setElevation(dp(context, 8));
+
+        final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                dp(context, 56), dp(context, 56), Gravity.BOTTOM | Gravity.RIGHT);
+        params.setMargins(0, 0, dp(context, 20), dp(context, 24));
+        final FrameLayout root = (FrameLayout) rootView;
+        root.addView(button, params);
+        button.setOnClickListener(view -> openEditorDialog(editText));
+        floatingButton = button;
+        setViewModeVisible(isViewModeVisible);
+        button.bringToFront();
+    }
+
+    public void setViewModeVisible(final boolean isViewMode) {
+        isViewModeVisible = isViewMode;
+        if (floatingButton != null) {
+            floatingButton.setVisibility(isViewMode ? View.VISIBLE : View.GONE);
+        }
     }
 
     public void openEditorDialog(final EditText editText) {
@@ -323,6 +374,7 @@ public final class AiAssistantModule {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 editText.getText().replace(0, editText.getText().length(), updated);
                 dialog.dismiss();
+                onAfterApply.run();
             });
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
                 fullPreview[0] = !fullPreview[0];

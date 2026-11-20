@@ -194,6 +194,17 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
             setViewModeVisibility(startInPreview, false);
         }
 
+        // >>> AI_ASSISTANT_HOOK_START
+        if (!_document.isBinaryFileNoTextLoading()) {
+            aiAssistantModule.attachFloatingButton(view, _hlEditor, () -> {
+                if (saveDocument(false) && _isPreviewVisible) {
+                    updateViewModeText();
+                }
+            });
+        }
+        aiAssistantModule.setViewModeVisible(_isPreviewVisible);
+        // <<< AI_ASSISTANT_HOOK_END
+
         // Configure the editor
         // ---------------------------------------------------------
         _hlEditor.setLineSpacing(0, _appSettings.getEditorLineSpacing());
@@ -1266,6 +1277,10 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         _nextConvertToPrintMode = false;
         _isPreviewVisible = show;
+
+        // >>> AI_ASSISTANT_HOOK_START
+        aiAssistantModule.setViewModeVisible(show);
+        // <<< AI_ASSISTANT_HOOK_END
 
         setActionBarVisibility();
         ((AppCompatActivity) activity).supportInvalidateOptionsMenu();
