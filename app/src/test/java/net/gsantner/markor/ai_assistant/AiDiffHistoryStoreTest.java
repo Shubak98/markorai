@@ -85,6 +85,57 @@ public class AiDiffHistoryStoreTest {
     }
 
     @Test
+    public void exportsOnlyAddedContentWithoutDiffPrefixes() throws Exception {
+        final File root = Files.createTempDirectory("ai-diff-history-added-export").toFile();
+        try {
+            final AiDiffHistoryStore store = new AiDiffHistoryStore(new File(root, "history"));
+            final File document = new File(root, "lesson.md");
+            store.addEntry(document, "Refresh lesson", "gemini", "model",
+                    "# Old title\nKeep this context\nRemove this line",
+                    "# New title\n\nKeep this context\nAdd this line");
+
+            final String exported = AiDiffHistoryStore.exportDiffsAsText(
+                    store.getHistory(document), document.getName(), true);
+
+            assertTrue(exported.contains("Source: lesson.md"));
+            assertTrue(exported.contains("Order: Newest first"));
+            assertTrue(exported.contains("Instruction: Refresh lesson"));
+            assertTrue(exported.contains("# New title\nAdd this line\n"));
+            assertFalse(exported.contains("+ "));
+            assertFalse(exported.contains("- "));
+            assertFalse(exported.contains("Keep this context"));
+            assertFalse(exported.contains("Remove this line"));
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    @Test
+    public void exportsFullDiffWithTimestampInstructionAndProvider() throws Exception {
+        final File root = Files.createTempDirectory("ai-diff-history-full-export").toFile();
+        try {
+            final AiDiffHistoryStore store = new AiDiffHistoryStore(new File(root, "history"));
+            final File document = new File(root, "lesson.md");
+            store.addEntry(document, "Refresh lesson", "gemini", "model-1",
+                    "# Old title\nKeep this context", "# New title\nKeep this context");
+
+            final String exported = AiDiffHistoryStore.exportDiffsAsText(
+                    store.getHistory(document), document.getName(), false);
+
+            assertTrue(exported.contains("Source: lesson.md"));
+            assertTrue(exported.contains("Date/Time: "));
+            assertTrue(exported.contains("Instruction: Refresh lesson"));
+            assertTrue(exported.contains("Provider: gemini"));
+            assertTrue(exported.contains("Model: model-1"));
+            assertTrue(exported.contains("- # Old title"));
+            assertTrue(exported.contains("+ # New title"));
+            assertTrue(exported.contains("  Keep this context"));
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    @Test
     public void clearsOnlyTheRequestedFilesHistory() throws Exception {
         final File root = Files.createTempDirectory("ai-diff-history-clear").toFile();
         try {

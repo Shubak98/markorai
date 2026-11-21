@@ -97,6 +97,46 @@ public final class AiUiTheme {
         return dialog;
     }
 
+    public static Dialog showCompactDialog(final Context context, final String title,
+            final View body, final View footer) {
+        final Dialog dialog = new Dialog(context);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        final LinearLayout shell = new LinearLayout(context);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setBackground(rounded(SURFACE, dp(context, 20), SURFACE_BORDER, dp(context, 1)));
+        shell.setClipToOutline(true);
+        shell.addView(createHeader(context, title, null),
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+        body.setPadding(dp(context, 16), dp(context, 12), dp(context, 16), dp(context, 12));
+        shell.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        shell.addView(divider(context), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1)));
+        final LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        footerParams.setMargins(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 12));
+        shell.addView(footer, footerParams);
+
+        dialog.setContentView(shell);
+        dialog.setCanceledOnTouchOutside(true);
+        final Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            window.setDimAmount(0.64f);
+        }
+        dialog.show();
+        if (window != null) {
+            final DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+            window.setLayout((int) (metrics.widthPixels * 0.92f),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            window.setGravity(Gravity.CENTER);
+        }
+        return dialog;
+    }
+
     public static GradientDrawable cardBackground(final Context context) {
         return rounded(SURFACE, dp(context, 20), SURFACE_BORDER, dp(context, 1));
     }

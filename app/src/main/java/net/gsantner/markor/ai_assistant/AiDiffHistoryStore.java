@@ -9,9 +9,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -60,6 +63,58 @@ public final class AiDiffHistoryStore {
         if (historyFile.exists() && !historyFile.delete()) {
             throw new IOException("Could not clear AI edit history for " + document.getName() + ".");
         }
+    }
+
+    public static String exportDiffsAsText(final List<Entry> entries, final String sourceFileName,
+            final boolean addedOnly) {
+        final StringBuilder output = new StringBuilder("AI Edit Diff Export\n")
+                .append("Source: ").append(safeString(sourceFileName)).append('\n')
+                .append("Order: Newest first\n\n");
+        final SimpleDateFormat dateFormat = new SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+        if (entries == null) {
+            return output.toString();
+        }
+        for (Entry entry : entries) {
+            if (entry == null) {
+                continue;
+            }
+            final StringBuilder content = new StringBuilder();
+            if (addedOnly) {
+                for (String line : entry.diffText.split("\\r?\\n")) {
+                    if (line.startsWith("+ ")) {
+                        final String addedLine = line.substring(2);
+                        if (!addedLine.trim().isEmpty()) {
+                            content.append(addedLine).append('\n');
+                        }
+                    }
+                }
+                if (content.length() == 0) {
+                    continue;
+                }
+            } else {
+                content.append(entry.diffText);
+                if (content.length() > 0 && content.charAt(content.length() - 1) != '\n') {
+                    content.append('\n');
+                }
+            }
+
+            output.append("Date/Time: ").append(dateFormat.format(new Date(entry.timestampMs)))
+                    .append('\n')
+                    .append("Instruction: ").append(entry.instruction.isEmpty()
+                            ? "No instruction recorded" : entry.instruction)
+                    .append('\n');
+            if (!addedOnly) {
+                output.append("Provider: ").append(entry.provider.isEmpty()
+                                ? "Unknown" : entry.provider)
+                        .append('\n');
+                if (!entry.model.isEmpty()) {
+                    output.append("Model: ").append(entry.model).append('\n');
+                }
+            }
+            output.append('\n').append(content).append('\n');
+        }
+        return output.toString();
     }
 
     private static Entry createEntry(final String instruction, final String provider, final String model,

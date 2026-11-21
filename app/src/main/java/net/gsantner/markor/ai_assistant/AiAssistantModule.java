@@ -513,13 +513,131 @@ public final class AiAssistantModule {
         final Button clearButton = AiUiTheme.button(context, "Clear History", AiUiTheme.ButtonKind.SECONDARY);
         clearButton.setTextColor(AiUiTheme.ACCENT);
         clearButton.setEnabled(!history.isEmpty());
+        final Button exportButton = AiUiTheme.button(context, "Export .txt", AiUiTheme.ButtonKind.PRIMARY);
+        exportButton.setEnabled(!history.isEmpty());
         final Button closeButton = AiUiTheme.button(context, "Close", AiUiTheme.ButtonKind.PRIMARY);
         actions.addView(clearButton, AiUiTheme.weightedButtonParams(context));
+        actions.addView(exportButton, AiUiTheme.weightedButtonParams(context));
         actions.addView(closeButton, AiUiTheme.weightedButtonParams(context));
         historyDialog[0] = AiUiTheme.showDialog(context, "All Diffs", body, actions, null);
         closeButton.setOnClickListener(view -> historyDialog[0].dismiss());
+        exportButton.setOnClickListener(view -> showDiffExportChoiceDialog(context, history));
         clearButton.setOnClickListener(view ->
                 showClearHistoryConfirmation(context, editText, historyDialog[0], allDiffsButton));
+    }
+
+    private void showDiffExportChoiceDialog(final android.content.Context context,
+            final List<AiDiffHistoryStore.Entry> history) {
+        final LinearLayout body = verticalLayout(context);
+        final Button addedOnly = AiUiTheme.button(
+                context, "Added Content Only (.txt)", AiUiTheme.ButtonKind.PRIMARY);
+        final Button fullDiff = AiUiTheme.button(
+                context, "Full Diff Log (+ / -) (.txt)", AiUiTheme.ButtonKind.SECONDARY);
+        final TextView recommendation = AiUiTheme.label(context,
+                "Added-only is best for updating Anki decks.", 12);
+        recommendation.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        body.addView(recommendation);
+        addFooterButton(context, body, addedOnly);
+        addFooterButton(context, body, fullDiff);
+        final LinearLayout footer = AiUiTheme.actionRow(context);
+        final Button cancel = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
+        footer.addView(cancel, AiUiTheme.weightedButtonParams(context));
+        final Dialog choiceDialog = AiUiTheme.showCompactDialog(
+                context, "Export All Diffs", body, footer);
+        cancel.setOnClickListener(view -> choiceDialog.dismiss());
+        addedOnly.setOnClickListener(view -> {
+            choiceDialog.dismiss();
+            exportDiffHistory(context, history, true);
+        });
+        fullDiff.setOnClickListener(view -> {
+            choiceDialog.dismiss();
+            exportDiffHistory(context, history, false);
+        });
+    }
+
+    private void exportDiffHistory(final android.content.Context context,
+            final List<AiDiffHistoryStore.Entry> history, final boolean addedOnly) {
+        try {
+            final String filename = createDiffExportFilename(addedOnly);
+            final String text = AiDiffHistoryStore.exportDiffsAsText(
+                    history, currentFile == null ? "" : currentFile.getName(), addedOnly);
+            final File file = saveDiffExport(filename, text);
+            Toast.makeText(context, "Saved " + file.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            showDiffExportSavedDialog(context, file, text);
+        } catch (IOException exception) {
+            showError(exception.getMessage());
+        }
+    }
+
+    private String createDiffExportFilename(final boolean addedOnly) throws IOException {
+        if (currentFile == null) {
+            throw new IOException("The current note is not available for diff export.");
+        }
+        final String noteName = currentFile.getName();
+        final int extensionIndex = noteName.lastIndexOf('.');
+        final String noteBaseName = extensionIndex > 0
+                ? noteName.substring(0, extensionIndex) : noteName;
+        String base = noteBaseName.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (base.isEmpty()) {
+            base = "note";
+        }
+        final String kind = addedOnly ? "added_diffs" : "all_diffs";
+        final String timestamp = new SimpleDateFormat("yyyyMMdd_HHmm", Locale.ROOT)
+                .format(new Date());
+        return base + "_" + kind + "_" + timestamp + ".txt";
+    }
+
+    private File saveDiffExport(final String filename, final String text) throws IOException {
+        final File parent = currentFile == null ? null : currentFile.getParentFile();
+        if (parent == null || !parent.isDirectory()) {
+            throw new IOException("The current note's folder is not available.");
+        }
+        final int extensionIndex = filename.lastIndexOf('.');
+        final String stem = extensionIndex < 0 ? filename : filename.substring(0, extensionIndex);
+        final String extension = extensionIndex < 0 ? "" : filename.substring(extensionIndex);
+        for (int suffix = 0; ; suffix++) {
+            final File file = new File(parent, stem + (suffix == 0 ? "" : "_" + suffix) + extension);
+            if (!file.createNewFile()) {
+                continue;
+            }
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                output.write(text.getBytes(StandardCharsets.UTF_8));
+                output.getFD().sync();
+                return file;
+            } catch (IOException exception) {
+                if (!file.delete()) {
+                    exception.addSuppressed(new IOException("Could not remove incomplete diff export: "
+                            + file.getAbsolutePath()));
+                }
+                throw exception;
+            }
+        }
+    }
+
+    private void showDiffExportSavedDialog(final android.content.Context context,
+            final File file, final String text) {
+        final LinearLayout body = verticalLayout(context);
+        final TextView location = AiUiTheme.label(context, file.getAbsolutePath(), 13);
+        location.setTextColor(AiUiTheme.SECONDARY_TEXT);
+        body.addView(location);
+        final LinearLayout footer = AiUiTheme.actionRow(context);
+        final Button copy = AiUiTheme.button(context, "Copy Text", AiUiTheme.ButtonKind.PRIMARY);
+        final Button done = AiUiTheme.button(context, "Done", AiUiTheme.ButtonKind.SECONDARY);
+        footer.addView(copy, AiUiTheme.weightedButtonParams(context));
+        footer.addView(done, AiUiTheme.weightedButtonParams(context));
+        final Dialog savedDialog = AiUiTheme.showCompactDialog(
+                context, "Diff Export Saved", body, footer);
+        copy.setOnClickListener(view -> {
+            final ClipboardManager clipboard = (ClipboardManager)
+                    context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                showError("Could not access the clipboard.");
+                return;
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("AI Diff Export", text));
+            Toast.makeText(context, "Diff text copied.", Toast.LENGTH_SHORT).show();
+        });
+        done.setOnClickListener(view -> savedDialog.dismiss());
     }
 
     private LinearLayout createHistoryCard(final android.content.Context context,
