@@ -29,9 +29,18 @@ public final class OpenAiCompatibleHelper {
     public static GeminiMarkdownHelper.IntentResult generateIntent(final String providerName,
             final String baseUrl, final String apiKey, final String model, final String markdown,
             final String instruction, final String selectedMode, final String folderContext) throws IOException {
+        return generateIntent(providerName, baseUrl, apiKey, model, markdown, instruction,
+                selectedMode, folderContext, null);
+    }
+
+    public static GeminiMarkdownHelper.IntentResult generateIntent(final String providerName,
+            final String baseUrl, final String apiKey, final String model, final String markdown,
+            final String instruction, final String selectedMode, final String folderContext,
+            final String imageBase64) throws IOException {
         validateCredentials(providerName, apiKey, model);
         final JSONObject requestBody = buildRequest(model,
-                GeminiMarkdownHelper.buildIntentPrompt(markdown, instruction, selectedMode, folderContext));
+                GeminiMarkdownHelper.buildIntentPrompt(markdown, instruction, selectedMode, folderContext),
+                imageBase64);
         final String response = sendChatCompletion(providerName, baseUrl, apiKey, requestBody);
         return extractIntentResponse(response);
     }
@@ -110,12 +119,21 @@ public final class OpenAiCompatibleHelper {
         return sorted;
     }
 
-    private static JSONObject buildRequest(final String model, final String prompt) throws IOException {
+    private static JSONObject buildRequest(final String model, final String prompt,
+            final String imageBase64) throws IOException {
         try {
-            final JSONArray messages = new JSONArray()
-                    .put(new JSONObject().put("role", "system")
-                            .put("content", GeminiMarkdownHelper.getIntentSystemInstruction()))
-                    .put(new JSONObject().put("role", "user").put("content", prompt));
+            final JSONArray messages = new JSONArray().put(new JSONObject().put("role", "system")
+                    .put("content", GeminiMarkdownHelper.getIntentSystemInstruction()));
+            final Object userContent;
+            if (imageBase64 == null || imageBase64.isEmpty()) {
+                userContent = prompt;
+            } else {
+                userContent = new JSONArray()
+                        .put(new JSONObject().put("type", "text").put("text", prompt))
+                        .put(new JSONObject().put("type", "image_url").put("image_url",
+                                new JSONObject().put("url", "data:image/jpeg;base64," + imageBase64)));
+            }
+            messages.put(new JSONObject().put("role", "user").put("content", userContent));
             return new JSONObject()
                     .put("model", model)
                     .put("messages", messages)

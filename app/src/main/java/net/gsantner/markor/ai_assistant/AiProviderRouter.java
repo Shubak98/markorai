@@ -68,16 +68,32 @@ public final class AiProviderRouter {
 
     public Result generateIntent(final String markdown, final String instruction, final String selectedMode,
             final String folderContext) throws IOException {
+        return generateIntent(markdown, instruction, selectedMode, folderContext, null);
+    }
+
+    public Result generateIntent(final String markdown, final String instruction, final String selectedMode,
+            final String folderContext, final String imageBase64) throws IOException {
+        final String selectedContext = MarkdownChunker.selectContext(markdown, instruction);
         return execute(settingsStore.getProviderConfigs(), settingsStore.getPrimaryProvider(),
                 settingsStore.isAutoFailoverEnabled(), config -> {
                     if (config.provider == Provider.GEMINI) {
                         return GeminiMarkdownHelper.generateIntent(config.apiKey, config.model,
-                                markdown, instruction, selectedMode, folderContext);
+                                selectedContext, instruction, selectedMode, folderContext, imageBase64);
                     }
                     return OpenAiCompatibleHelper.generateIntent(config.provider.getDisplayName(),
-                            config.baseUrl, config.apiKey, config.model, markdown, instruction,
-                            selectedMode, folderContext);
+                            config.baseUrl, config.apiKey, config.model, selectedContext, instruction,
+                            selectedMode, folderContext, imageBase64);
                 });
+    }
+
+    public String generateStudyAnswer(final String markdown, final String instruction) throws IOException {
+        return generateStudyAnswer(markdown, instruction, null);
+    }
+
+    public String generateStudyAnswer(final String markdown, final String instruction,
+            final String imageBase64) throws IOException {
+        return generateIntent(markdown, instruction, "study", "", imageBase64)
+                .getIntentResult().getAnswer();
     }
 
     public static List<ProviderConfig> buildProviderChain(final String primaryProvider,

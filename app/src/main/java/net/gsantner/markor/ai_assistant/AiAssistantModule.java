@@ -66,11 +66,16 @@ public final class AiAssistantModule {
         void onSelected(String model);
     }
 
+    private interface ImageResultCallback {
+        void onSelected(String base64);
+    }
+
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
 
     private final Fragment fragment;
     private final ActivityResultLauncher<Intent> voiceLauncher;
+    private final ActivityResultLauncher<String> imageLauncher;
     private final AiSettingsStore settingsStore;
     private final AiDiffHistoryStore diffHistoryStore;
     private EditText activeInstructionInput;
@@ -80,6 +85,7 @@ public final class AiAssistantModule {
     private File currentFile;
     private ScrollCallback scrollCallback;
     private OpenFileCallback openFileCallback;
+    private ImageResultCallback pendingImageCallback;
 
     public AiAssistantModule(final Fragment fragment) {
         this.fragment = fragment;
@@ -87,6 +93,8 @@ public final class AiAssistantModule {
         diffHistoryStore = new AiDiffHistoryStore(fragment.requireContext());
         voiceLauncher = fragment.registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(), this::onVoiceResult);
+        imageLauncher = fragment.registerForActivityResult(
+                new ActivityResultContracts.GetContent(), this::onImageSelected);
     }
 
     public void attachFloatingButton(final View rootView, final EditText editText, final File currentFile,
@@ -150,6 +158,19 @@ public final class AiAssistantModule {
         final LinearLayout content = verticalLayout(context);
         final String[] selectedMode = {"auto"};
         addModeChips(context, content, selectedMode);
+        final String[] attachedImage = {null};
+        final TextView imageChip = AiUiTheme.label(context, "📷 Image attached  ✕", 12);
+        imageChip.setTextColor(AiUiTheme.ACCENT);
+        imageChip.setPadding(dp(context, 9), dp(context, 6), dp(context, 9), dp(context, 6));
+        imageChip.setBackground(AiUiTheme.rounded(AiUiTheme.SURFACE,
+                dp(context, 16), AiUiTheme.ACCENT, dp(context, 1)));
+        imageChip.setVisibility(View.GONE);
+        content.addView(imageChip, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        imageChip.setOnClickListener(view -> {
+            attachedImage[0] = null;
+            imageChip.setVisibility(View.GONE);
+        });
         addVerticalGap(context, content, 10);
 
         final EditText instructions = new EditText(context);
@@ -204,18 +225,27 @@ public final class AiAssistantModule {
         final LinearLayout actions = AiUiTheme.actionRow(context);
         final Button cancelButton = AiUiTheme.button(context, "Cancel", AiUiTheme.ButtonKind.SECONDARY);
         final Button voiceButton = AiUiTheme.button(context, "Mic", AiUiTheme.ButtonKind.MIC);
+        final Button imageButton = AiUiTheme.button(context, "📷 Image", AiUiTheme.ButtonKind.MIC);
         final Button runButton = AiUiTheme.button(context, "Run AI", AiUiTheme.ButtonKind.PRIMARY);
         actions.addView(cancelButton, AiUiTheme.weightedButtonParams(context));
         final LinearLayout.LayoutParams voiceParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         voiceParams.setMargins(dp(context, 4), 0, dp(context, 4), 0);
         actions.addView(voiceButton, voiceParams);
+        final LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        imageParams.setMargins(dp(context, 4), 0, dp(context, 4), 0);
+        actions.addView(imageButton, imageParams);
         actions.addView(runButton, AiUiTheme.weightedButtonParams(context));
         final Dialog dialog = AiUiTheme.showDialog(context, "AI Assistant", content, actions, headerActions);
         if (historyReadError != null) {
             showError(historyReadError.getMessage());
         }
         voiceButton.setOnClickListener(view -> startVoiceInput());
+        imageButton.setOnClickListener(view -> pickImage(base64 -> {
+            attachedImage[0] = base64;
+            imageChip.setVisibility(View.VISIBLE);
+        }));
         settingsButton.setOnClickListener(view -> showSettingsDialog());
         allDiffsButton.setOnClickListener(view -> showAllDiffsDialog(context, editText, allDiffsButton));
         cancelButton.setOnClickListener(view -> dialog.dismiss());
@@ -226,16 +256,25 @@ public final class AiAssistantModule {
         });
         runButton.setOnClickListener(view -> {
             final String instruction = instructions.getText().toString().trim();
-            if (instruction.isEmpty()) {
+            final String requestedMode = selectedMode[0];
+            final boolean canStartWithoutInstruction = "tutor".equals(requestedMode)
+                    || "quiz".equals(requestedMode) || "anki".equals(requestedMode)
+                    || "diagram".equals(requestedMode);
+            if (instruction.isEmpty() && !canStartWithoutInstruction) {
                 Toast.makeText(context, "Enter an instruction before running the assistant.",
                         Toast.LENGTH_SHORT).show();
                 return;
             }
             final String originalMarkdown = editText.getText().toString();
-            final String requestedMode = selectedMode[0];
+            if ("tutor".equals(requestedMode)) {
+                dialog.dismiss();
+                showTutorChat(editText, originalMarkdown, attachedImage[0]);
+                return;
+            }
             runButton.setEnabled(false);
             cancelButton.setEnabled(false);
             voiceButton.setEnabled(false);
+            imageButton.setEnabled(false);
             settingsButton.setEnabled(false);
             instructions.setEnabled(false);
             progress.setVisibility(View.VISIBLE);
@@ -248,6 +287,56 @@ public final class AiAssistantModule {
             }
             EXECUTOR.execute(() -> {
                 try {
+                    if ("quiz".equals(requestedMode)) {
+                        final String rawQuiz = new AiProviderRouter(settingsStore).generateStudyAnswer(
+                                originalMarkdown, "Create 5 to 10 multiple-choice questions from the note. "
+                                        + "Return strict JSON only: {\"questions\":[{\"question\":\"...\","
+                                        + "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"correctIndex\":0,"
+                                        + "\"explanation\":\"...\"}]}. User request: " + instruction,
+                                attachedImage[0]);
+                        final List<AiStudyDialogs.Question> questions = AiStudyDialogs.parseQuiz(rawQuiz);
+                        MAIN_HANDLER.post(() -> {
+                            dialog.dismiss();
+                            if (fragment.getContext() != null) {
+                                AiStudyDialogs.showQuiz(context, questions,
+                                        text -> appendToNotePreview(editText, originalMarkdown, text,
+                                                instruction, "quiz", ""));
+                            }
+                        });
+                        return;
+                    }
+                    if ("anki".equals(requestedMode)) {
+                        final String rawCards = new AiProviderRouter(settingsStore).generateStudyAnswer(
+                                originalMarkdown, "Create useful Anki flashcards from this note. Return "
+                                        + "strict JSON only: {\"cards\":[{\"front\":\"...\",\"back\":\"...\"}]}. "
+                                        + "User request: " + instruction, attachedImage[0]);
+                        final List<AnkiCsvHelper.Card> cards = AnkiCsvHelper.parseCards(rawCards);
+                        final String csv = AnkiCsvHelper.toCsv(cards);
+                        MAIN_HANDLER.post(() -> {
+                            dialog.dismiss();
+                            if (fragment.getContext() != null) {
+                                showAnkiPreview(context, cards, csv);
+                            }
+                        });
+                        return;
+                    }
+                    if ("diagram".equals(requestedMode)) {
+                        final String diagram = new AiProviderRouter(settingsStore).generateStudyAnswer(
+                                originalMarkdown, "Create one valid Mermaid flowchart or mindmap that "
+                                        + "summarizes the note. Use simple alphanumeric node IDs and safe "
+                                        + "labels without quotes, brackets, parentheses, or unescaped "
+                                        + "special characters. Return only a ```mermaid fenced block. "
+                                        + "User request: " + instruction, attachedImage[0]);
+                        final String markdownDiagram = formatMermaid(diagram);
+                        MAIN_HANDLER.post(() -> {
+                            dialog.dismiss();
+                            if (fragment.getContext() != null) {
+                                appendToNotePreview(editText, originalMarkdown,
+                                        "\n\n" + markdownDiagram, instruction, "diagram", "");
+                            }
+                        });
+                        return;
+                    }
                     final boolean searchFolder = "folder".equals(requestedMode)
                             || ("auto".equals(requestedMode)
                             && FolderSearchHelper.isFolderSearchQuery(instruction));
@@ -257,10 +346,17 @@ public final class AiAssistantModule {
                             : folderResults.getContext().isEmpty()
                             ? "No relevant .md or .txt files matched the query in this folder."
                             : folderResults.getContext();
+                    final boolean hasImage = attachedImage[0] != null;
+                    final String effectiveInstruction = hasImage
+                            ? "Transcribe the attached page or handwriting into clean structured Markdown. "
+                                    + "Return it as an answer that can be reviewed and appended to the note.\n\n"
+                                    + instruction : instruction;
+                    final String effectiveMode = hasImage ? "study" : requestedMode;
                     final AiProviderRouter.Result providerResult = new AiProviderRouter(settingsStore)
-                            .generateIntent(originalMarkdown, instruction, requestedMode, folderContext);
+                            .generateIntent(originalMarkdown, effectiveInstruction, effectiveMode,
+                                    folderContext, attachedImage[0]);
                     final GeminiMarkdownHelper.IntentResult result = providerResult.getIntentResult();
-                    final String expectedMode = expectedIntentMode(requestedMode);
+                    final String expectedMode = expectedIntentMode(effectiveMode);
                     if (expectedMode != null && !expectedMode.equals(result.getMode())) {
                         throw new IOException("The AI provider did not follow the selected mode. Please try again.");
                     }
@@ -275,7 +371,7 @@ public final class AiAssistantModule {
                                         Toast.LENGTH_SHORT).show();
                             }
                             handleIntentResult(editText, originalMarkdown, result, updatedMarkdown,
-                                    folderResults, instruction, providerResult.getUsedProviderId(),
+                                    folderResults, effectiveInstruction, providerResult.getUsedProviderId(),
                                     providerResult.getUsedModelName());
                         }
                     });
@@ -288,6 +384,7 @@ public final class AiAssistantModule {
                         progressLabel.setVisibility(View.GONE);
                         cancelButton.setEnabled(true);
                         voiceButton.setEnabled(true);
+                        imageButton.setEnabled(true);
                         settingsButton.setEnabled(true);
                         instructions.setEnabled(true);
                         runButton.setEnabled(true);
@@ -321,7 +418,9 @@ public final class AiAssistantModule {
             final String[] selectedMode) {
         final String[][] modes = {
                 {"auto", "Auto"}, {"edit", "Edit"}, {"study", "Ask / Study"},
-                {"jump", "Jump"}, {"folder", "Folder"}, {"new_note", "New Note"}
+                {"jump", "Jump"}, {"folder", "Folder"}, {"new_note", "New Note"},
+                {"tutor", "Tutor Chat"}, {"quiz", "MCQ Quiz"},
+                {"anki", "Anki CSV"}, {"diagram", "Diagram"}
         };
         final HorizontalScrollView horizontalScroll = new HorizontalScrollView(context);
         horizontalScroll.setHorizontalScrollBarEnabled(false);
@@ -666,6 +765,159 @@ public final class AiAssistantModule {
         final int length = input.length();
         input.getText().append((length > 0 && !Character.isWhitespace(
                 input.getText().charAt(length - 1)) ? " " : "") + recognizedText);
+    }
+
+    private void pickImage(final ImageResultCallback callback) {
+        pendingImageCallback = callback;
+        imageLauncher.launch("image/*");
+    }
+
+    private void onImageSelected(final android.net.Uri uri) {
+        final ImageResultCallback callback = pendingImageCallback;
+        pendingImageCallback = null;
+        if (uri == null || callback == null || fragment.getContext() == null) {
+            return;
+        }
+        try {
+            callback.onSelected(ImageEncodingHelper.encodeJpeg(
+                    fragment.requireContext().getContentResolver(), uri));
+        } catch (IOException exception) {
+            showError(exception.getMessage());
+        }
+    }
+
+    private void showTutorChat(final EditText editText, final String markdown, final String imageBase64) {
+        final android.content.Context context = fragment.getContext();
+        if (context == null || currentFile == null) {
+            return;
+        }
+        AiStudyDialogs.showTutorChat(context, currentFile.getAbsolutePath(), markdown,
+                (recentTurns, question, image, callback) -> EXECUTOR.execute(() -> {
+                    try {
+                        final StringBuilder history = new StringBuilder();
+                        for (int index = 0; index < recentTurns.size() - 1; index++) {
+                            final AiStudyDialogs.Turn turn = recentTurns.get(index);
+                            history.append(turn.isUser() ? "Student: " : "Tutor: ")
+                                    .append(turn.getText()).append('\n');
+                        }
+                        final String prompt = (history.length() == 0 ? "" : "Recent conversation:\n"
+                                + history + "\n")
+                                + "Answer the student's latest question clearly and use the note as context:\n"
+                                + question;
+                        final String answer = new AiProviderRouter(settingsStore)
+                                .generateStudyAnswer(markdown, prompt, image);
+                        MAIN_HANDLER.post(() -> callback.onResult(answer, null));
+                    } catch (IOException exception) {
+                        MAIN_HANDLER.post(() -> callback.onResult(null, exception.getMessage()));
+                    }
+                }), text -> appendToNotePreview(editText, editText.getText().toString(),
+                        "\n\n" + text, "Append tutor response", "tutor", ""),
+                input -> {
+                    activeInstructionInput = input;
+                    startVoiceInput();
+                }, imageBase64);
+    }
+
+    private void appendToNotePreview(final EditText editText, final String original,
+            final String content, final String instruction, final String provider, final String model) {
+        try {
+            final String patch = new JSONObject().put("edits", new JSONArray().put(new JSONObject()
+                    .put("action", "append_end").put("target", "").put("content", content))).toString();
+            final String updated = GeminiMarkdownHelper.applyEdits(original, patch);
+            showDiffPreview(editText, original, updated, instruction, provider, model);
+        } catch (org.json.JSONException | IOException exception) {
+            showError(exception.getMessage());
+        }
+    }
+
+    private static String formatMermaid(final String response) throws IOException {
+        if (response == null || response.trim().isEmpty()) {
+            throw new IOException("The AI provider returned an empty diagram.");
+        }
+        final String trimmed = response.trim();
+        if (trimmed.startsWith("```mermaid") && trimmed.endsWith("```")) {
+            return trimmed;
+        }
+        final String content = GeminiMarkdownHelper.stripMarkdownFences(trimmed).trim();
+        if (content.startsWith("flowchart ") || content.startsWith("graph ")
+                || content.startsWith("mindmap")) {
+            return "```mermaid\n" + content + "\n```";
+        }
+        throw new IOException("The AI provider did not return a Mermaid flowchart or mind-map.");
+    }
+
+    private void showAnkiPreview(final android.content.Context context,
+            final List<AnkiCsvHelper.Card> cards, final String csv) {
+        final LinearLayout body = verticalLayout(context);
+        body.addView(AiUiTheme.label(context, cards.size() + " cards", 14));
+        for (int index = 0; index < Math.min(cards.size(), 5); index++) {
+            final AnkiCsvHelper.Card card = cards.get(index);
+            final LinearLayout item = verticalLayout(context);
+            item.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10));
+            item.setBackground(AiUiTheme.inputBackground(context));
+            item.addView(AiUiTheme.label(context, "Front: " + card.getFront(), 13));
+            final TextView back = AiUiTheme.label(context, "Back: " + card.getBack(), 13);
+            back.setTextColor(AiUiTheme.SECONDARY_TEXT);
+            item.addView(back);
+            final LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.setMargins(0, dp(context, 8), 0, 0);
+            body.addView(item, params);
+        }
+        final LinearLayout actions = AiUiTheme.actionRow(context);
+        final Button copy = AiUiTheme.button(context, "Copy CSV", AiUiTheme.ButtonKind.SECONDARY);
+        final Button save = AiUiTheme.button(context, "Save .csv", AiUiTheme.ButtonKind.PRIMARY);
+        actions.addView(copy, AiUiTheme.weightedButtonParams(context));
+        actions.addView(save, AiUiTheme.weightedButtonParams(context));
+        final Dialog dialog = AiUiTheme.showDialog(context, "Anki CSV Preview", body, actions, null);
+        copy.setOnClickListener(view -> {
+            final android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                    context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                showError("Could not access the clipboard.");
+                return;
+            }
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Anki CSV", csv));
+            Toast.makeText(context, "CSV copied.", Toast.LENGTH_SHORT).show();
+        });
+        save.setOnClickListener(view -> {
+            try {
+                final File file = saveAnkiCsv(csv);
+                dialog.dismiss();
+                Toast.makeText(context, "Saved " + file.getName(), Toast.LENGTH_SHORT).show();
+            } catch (IOException exception) {
+                showError(exception.getMessage());
+            }
+        });
+    }
+
+    private File saveAnkiCsv(final String csv) throws IOException {
+        final File parent = currentFile == null ? null : currentFile.getParentFile();
+        if (parent == null || !parent.isDirectory()) {
+            throw new IOException("The current note's folder is not available.");
+        }
+        String base = currentFile.getName().replaceFirst("(?i)\\.md$", "")
+                .replaceAll("[^A-Za-z0-9._-]", "_");
+        if (base.isEmpty()) {
+            base = "note";
+        }
+        for (int suffix = 0; ; suffix++) {
+            final File file = new File(parent, base + "_anki"
+                    + (suffix == 0 ? "" : "_" + suffix) + ".csv");
+            if (!file.createNewFile()) {
+                continue;
+            }
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                output.write(csv.getBytes(StandardCharsets.UTF_8));
+                return file;
+            } catch (IOException exception) {
+                if (!file.delete()) {
+                    exception.addSuppressed(new IOException("Could not remove incomplete CSV: "
+                            + file.getAbsolutePath()));
+                }
+                throw exception;
+            }
+        }
     }
 
     private void showSettingsDialog() {

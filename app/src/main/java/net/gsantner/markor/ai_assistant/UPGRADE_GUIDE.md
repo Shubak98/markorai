@@ -2,11 +2,11 @@
 
 ## Copy the module
 
-Copy the entire `app/src/main/java/net/gsantner/markor/ai_assistant/` folder into the same path in the new Markor repository. No resource, Gradle, or settings-file changes are required.
+Copy the entire `app/src/main/java/net/gsantner/markor/ai_assistant/` folder into the same path in the new Markor repository. No resource, XML, Gradle, or settings-file changes are required. The folder now includes large-note context selection, gallery image encoding and vision requests, tutor and quiz dialogs, Anki CSV generation, and Mermaid insertion.
 
 ## Paste the hook
 
-In the new `DocumentEditAndViewFragment.java`, add the field to the fragment class and paste the initialization inside `onCreate`, directly after `super.onCreate(savedInstanceState)`. This registers the voice result launcher before the fragment is started:
+In the new `DocumentEditAndViewFragment.java`, add the field to the fragment class and paste the initialization inside `onCreate`, directly after `super.onCreate(savedInstanceState)`. This registers the voice and image-picker result launchers before the fragment is started:
 
 ```java
 private net.gsantner.markor.ai_assistant.AiAssistantModule aiAssistantModule;
@@ -82,4 +82,4 @@ aiAssistantModule.setViewModeVisible(show);
 // <<< AI_ASSISTANT_HOOK_END
 ```
 
-The floating button and the menu item both open the same multi-mode AI Assistant dialog. The `attachFloatingButton` hook passes the current document `File`, a callback for editor/WebView section jumps, and an `openFile(File)` callback. Applying a diff or appending an answer updates `_hlEditor`, saves the document, and refreshes the WebView preview when view mode is active. The assistant code and optional tests remain self-contained in `ai_assistant/`.
+The module constructor registers both the voice-recognition launcher and the Gallery/Files image picker before the fragment is started. No extra fragment lines are needed for the image picker. The floating button and menu item open the same multi-mode AI Assistant dialog. The `attachFloatingButton` hook passes the current document `File`, a callback for editor/WebView section jumps, and an `openFile(File)` callback. Applying a diff or appending an answer updates `_hlEditor`, saves the document, and refreshes the WebView preview when view mode is active. The assistant code and its tests remain self-contained in `ai_assistant/`.
